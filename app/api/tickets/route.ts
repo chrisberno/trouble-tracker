@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getTicketsByCustomer, createTicket } from '@/lib/db';
+import { createTaskRouterTask } from '@/lib/taskrouter';
 
 // CORS configuration - allow localhost for development testing
 const allowedOrigins = ['https://connie.plus', 'http://localhost:3000'];
@@ -67,35 +68,24 @@ export async function POST(request: NextRequest) {
       status: 'Open'
     });
     
-    // Trigger TaskRouter webhook (fire and forget - don't wait for response)
+    // Create TaskRouter task inline (must await - Vercel kills background fetches)
     try {
-      // Get origin from referrer or query params
-      const origin = request.headers.get('referer')?.includes('nss.') ? 'NSS' : 
+      const ticketOrigin = request.headers.get('referer')?.includes('nss.') ? 'NSS' :
                     request.headers.get('referer')?.includes('hhovv.') ? 'HHOVV' :
-                    request.headers.get('referer')?.includes('dev.') ? 'DevSandBox' : 
+                    request.headers.get('referer')?.includes('dev.') ? 'DevSandBox' :
                     'Unknown';
-      
-      // Call our internal webhook endpoint
-      fetch(new URL('/api/webhook/taskrouter', request.url).toString(), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          ticketId: ticket.id,
-          title: ticket.title,
-          description: ticket.description,
-          customerName: ticket.customerName,
-          customerPhone: ticket.customerPhone,
-          origin: origin
-        })
-      }).catch(err => {
-        console.error('Failed to trigger TaskRouter webhook:', err);
-        // Don't throw - ticket was created successfully
+
+      await createTaskRouterTask({
+        ticketId: ticket.id,
+        title: ticket.title,
+        description: ticket.description,
+        customerName: ticket.customerName,
+        customerPhone: ticket.customerPhone,
+        origin: ticketOrigin,
       });
-    } catch (webhookError) {
-      console.error('Error triggering webhook:', webhookError);
-      // Don't throw - ticket was created successfully
+    } catch (taskError) {
+      console.error('Failed to create TaskRouter task:', taskError);
+      // Don't throw - ticket was created successfully in DB
     }
     
     const origin = request.headers.get('origin');

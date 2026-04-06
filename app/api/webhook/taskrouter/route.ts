@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { ticketId, title, description, customerName, customerPhone, origin } = body;
+    const { ticketId, title, description, customerName, customerPhone, origin, appBaseUrl } = body;
     
     // Get Twilio credentials from environment variables
     const TWILIO_ACCOUNT_SID = process.env.TWILIO_RTC_ACCOUNT_SID;
@@ -29,19 +29,26 @@ export async function POST(request: NextRequest) {
     // Call TaskRouter API directly (more reliable than Studio Flow)
     const taskRouterUrl = `https://taskrouter.twilio.com/v1/Workspaces/WSfe43abb4378f0f1e2ebb98877c03bd1d/Tasks`;
     
+    // Build the profile URL for the Enhanced CRM Container
+    const baseUrl = appBaseUrl || 'https://trouble-ticket-app.vercel.app';
+    const profileUrl = `${baseUrl}/task?ticketId=${ticketId}&customerName=${encodeURIComponent(customerName)}&customerPhone=${encodeURIComponent(customerPhone)}&origin=${encodeURIComponent(origin)}&title=${encodeURIComponent(title)}&priority=${priority}`;
+
     // Create rich task attributes for better Flex display
     const taskAttributes = {
       // Primary display fields
       name: `🎫 Support Ticket: ${title}`,
       type: 'support_ticket',
       skill: 'Support',  // Important for routing
-      
+
+      // CRM container URL - loaded by Enhanced CRM Container in Flex
+      profile_url: profileUrl,
+
       // Ticket information
       ticketId: ticketId,
       title: title,
       description: description,
       urgency: priority,
-      
+
       // Customer information
       customerName: customerName,
       customerPhone: customerPhone,
@@ -50,7 +57,7 @@ export async function POST(request: NextRequest) {
         phone: customerPhone,
         organization: origin
       },
-      
+
       // Metadata
       origin: origin,
       timestamp: new Date().toISOString(),

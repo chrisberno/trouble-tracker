@@ -9,7 +9,7 @@
 
 ## Architecture (v2.0)
 
-Per [Manifesto v2.1](~/projects/chrisberno.dev/vault/chrisberno-dev-vault/projects/trouble-tracker-app/documents/manifesto.md):
+Per Manifesto v2.1 (`~/projects/chrisberno.dev/vault/chrisberno-dev-vault/projects/trouble-tracker-app/documents/manifesto.md`):
 
 - **The Core is PP.app** — Onreb-owned ticketing engine via the `perfex_saas` multi-tenant module. PP.app owns ticket identity, state machine, history, SLA logic, assignment, multi-tenancy, and audit trail. TroubleTracker's repo contains zero authoritative lifecycle state.
 - **`pp-client/`** is the only place in this repo allowed to import PP.app SDKs, hit PP.app URLs, or know about Perfex data shapes. All adapters call `pp-client`'s normalized interface only.
@@ -52,7 +52,7 @@ lib/
 
 ## Sprint 1.0 — Phase status
 
-Per [Sprint 1.0 doc](~/projects/chrisberno.dev/vault/chrisberno-dev-vault/projects/trouble-tracker-app/technical/dev-logs/sprint-1.0-2026-04-30-trouble-tracker-poc.md) and [Roadmap v1.1](~/projects/chrisberno.dev/vault/chrisberno-dev-vault/projects/trouble-tracker-app/documents/roadmap.md):
+Per Sprint 1.0 doc (`~/projects/chrisberno.dev/vault/chrisberno-dev-vault/projects/trouble-tracker-app/technical/dev-logs/sprint-1.0-2026-04-30-trouble-tracker-poc.md`) and Roadmap v1.1 (`~/projects/chrisberno.dev/vault/chrisberno-dev-vault/projects/trouble-tracker-app/documents/roadmap.md`):
 
 | Phase | Description | Status |
 |-------|-------------|--------|

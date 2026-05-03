@@ -11,6 +11,12 @@
     "waiting": 4,
     "closed": 5
   },
+  "customFieldIds": {
+    "ticket": {
+      "customer_scope": 1,
+      "intake_source": 2
+    }
+  },
   "customerScopes": [
     { "scope": "NSS",      "refererMatch": "nss.connie.team" },
     { "scope": "HHOVV",    "refererMatch": "hhovv.connie.team" },

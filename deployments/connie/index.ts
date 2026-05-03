@@ -18,6 +18,7 @@ export function buildConnieConfig(): DeploymentConfig {
       return 'Unknown';
     },
     statusMap: config.statusMap,
+    customFieldIds: config.customFieldIds,
   };
 }
 

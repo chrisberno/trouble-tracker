@@ -150,10 +150,11 @@ interface PpTicketShape {
   clientid?: number | string;
   userid?: number | string;
   contactid?: number | string;
-  name?: string;
-  firstname?: string;
-  lastname?: string;
-  company?: string;
+  firstname?: string | null;
+  lastname?: string | null;
+  user_firstname?: string | null;
+  user_lastname?: string | null;
+  company?: string | null;
   email?: string;
   phonenumber?: string;
   phone?: string;
@@ -202,7 +203,7 @@ export function mapPpTicketToNormalized(
   const customerName =
     raw.company ||
     [raw.firstname, raw.lastname].filter(Boolean).join(' ').trim() ||
-    raw.name ||
+    [raw.user_firstname, raw.user_lastname].filter(Boolean).join(' ').trim() ||
     'Unknown';
   const customer: Ticket['customer'] = {
     name: customerName,
@@ -280,36 +281,98 @@ export function mapPpReplyToNormalized(
   };
 }
 
-interface PpCustomerCreateResponse {
+interface PpCreateResponse {
+  status?: boolean;
+  message?: string;
+  record_id?: number | string;
   userid?: number | string;
   id?: number | string;
-  message?: string;
-  status?: boolean;
+  data?: { id?: number | string; userid?: number | string; record_id?: number | string };
 }
 
-interface PpCustomerListItem {
-  userid?: number | string;
+interface PpContactShape {
   id?: number | string;
+  userid?: number | string;
   email?: string;
-  company?: string;
+  is_primary?: number | string;
+}
+
+async function ensureContactForCustomer(
+  customerId: string,
+  customer: { name: string; email?: string; phone?: string },
+  config: DeploymentConfig,
+): Promise<string> {
+  // Look up existing contacts for this customer (primary first)
+  try {
+    const contacts = await ppFetch<PpContactShape[] | { data?: PpContactShape[] }>({
+      method: 'GET',
+      path: `/api/contacts/${encodeURIComponent(customerId)}`,
+      config,
+    });
+    const list = Array.isArray(contacts) ? contacts : (contacts?.data ?? []);
+    if (list.length > 0) {
+      const primary = list.find((c) => c.is_primary == 1 || c.is_primary === '1') ?? list[0];
+      if (primary?.id !== undefined) return String(primary.id);
+    }
+  } catch (err) {
+    if (!(err instanceof PpClientNotFoundError)) {
+      // fall through and try create
+    }
+  }
+
+  // Split a single name into first/last (best-effort).
+  const parts = (customer.name ?? '').trim().split(/\s+/);
+  const firstname = parts[0] || 'Customer';
+  const lastname = parts.slice(1).join(' ') || '-';
+
+  await ppFetch<PpCreateResponse>({
+    method: 'POST',
+    path: '/api/contacts',
+    body: {
+      customer_id: customerId,
+      firstname,
+      lastname,
+      email: customer.email,
+      phonenumber: customer.phone,
+      is_primary: 'on',
+    },
+    config,
+  });
+
+  // Re-fetch to get the new contact id
+  const refetch = await ppFetch<PpContactShape[] | { data?: PpContactShape[] }>({
+    method: 'GET',
+    path: `/api/contacts/${encodeURIComponent(customerId)}`,
+    config,
+  });
+  const list = Array.isArray(refetch) ? refetch : (refetch?.data ?? []);
+  const primary = list.find((c) => c.is_primary == 1 || c.is_primary === '1') ?? list[0];
+  if (primary?.id !== undefined) return String(primary.id);
+  throw new PpClientServerError('ensureContactForCustomer: no contact id returned by PP.app');
 }
 
 async function ensureCustomer(
   customer: { name: string; email?: string; phone?: string },
   config: DeploymentConfig,
-): Promise<string> {
+): Promise<{ customerId: string; contactId: string }> {
+  // Email is unique across PP.app contacts. If a contact with this email
+  // already exists, reuse its customer_id + contact_id rather than creating
+  // duplicates (PP.app would 409 on the contact create otherwise).
   if (customer.email) {
     try {
-      const search = await ppFetch<PpCustomerListItem[] | { data?: PpCustomerListItem[] }>({
+      const existing = await ppFetch<PpContactShape[] | { data?: PpContactShape[] }>({
         method: 'GET',
-        path: `/api/customers/search/${encodeURIComponent(customer.email)}`,
+        path: `/api/contacts/search/${encodeURIComponent(customer.email)}`,
         config,
       });
-      const list = Array.isArray(search) ? search : (search?.data ?? []);
+      const list = Array.isArray(existing) ? existing : (existing?.data ?? []);
       if (list.length > 0) {
         const found = list[0];
-        const id = found.userid ?? found.id;
-        if (id !== undefined) return String(id);
+        const contactId = found.id !== undefined ? String(found.id) : '';
+        const customerId = found.userid !== undefined ? String(found.userid) : '';
+        if (contactId && customerId) {
+          return { customerId, contactId };
+        }
       }
     } catch (err) {
       if (!(err instanceof PpClientNotFoundError)) {
@@ -318,56 +381,54 @@ async function ensureCustomer(
     }
   }
 
-  try {
-    const created = await ppFetch<PpCustomerCreateResponse>({
-      method: 'POST',
-      path: '/api/customers',
-      body: {
-        company: customer.name,
-        email: customer.email,
-        phonenumber: customer.phone,
-      },
-      config,
-    });
-    const id = created.userid ?? created.id;
-    if (id !== undefined) return String(id);
+  const created = await ppFetch<PpCreateResponse>({
+    method: 'POST',
+    path: '/api/customers',
+    body: {
+      company: customer.name,
+      phonenumber: customer.phone,
+    },
+    config,
+  });
+
+  const customerId = String(
+    created.record_id ?? created.userid ?? created.id ?? created.data?.record_id ?? created.data?.userid ?? '',
+  );
+  if (!customerId) {
     throw new PpClientServerError('createCustomer returned no id');
-  } catch (err) {
-    if (err instanceof PpClientError && err.statusCode === 409 && customer.email) {
-      const search = await ppFetch<PpCustomerListItem[] | { data?: PpCustomerListItem[] }>({
-        method: 'GET',
-        path: `/api/customers/search/${encodeURIComponent(customer.email)}`,
-        config,
-      });
-      const list = Array.isArray(search) ? search : (search?.data ?? []);
-      if (list.length > 0) {
-        const id = list[0].userid ?? list[0].id;
-        if (id !== undefined) return String(id);
-      }
-    }
-    throw err;
   }
+
+  const contactId = await ensureContactForCustomer(customerId, customer, config);
+  return { customerId, contactId };
 }
 
 interface PpCreateTicketResponse {
+  status?: boolean;
+  message?: string;
+  record_id?: number | string;
   ticketid?: number | string;
   id?: number | string;
   ticket_id?: number | string;
   data?: PpTicketShape;
-  message?: string;
-  status?: boolean;
 }
+
+// PP.app default department id used when adapters don't override.
+// PP-CTO confirmed the TroubleTracker tenant ships with department=1 ("General").
+const DEFAULT_DEPARTMENT_ID = '1';
 
 export async function createTicket(
   input: CreateTicketInput,
   config: DeploymentConfig,
 ): Promise<Ticket> {
-  const customerId = await ensureCustomer(input.customer, config);
+  const { customerId, contactId } = await ensureCustomer(input.customer, config);
 
-  const body = {
+  const body: Record<string, unknown> = {
     subject: input.subject,
     body: input.description,
+    message: input.description, // PP.app stores body in the `message` column on read
     clientid: customerId,
+    contactid: contactId,
+    department: DEFAULT_DEPARTMENT_ID,
     priority: PRIORITY_TO_PP[input.priority],
     status: config.statusMap.open,
     custom_fields: {
@@ -386,7 +447,9 @@ export async function createTicket(
     extraHeaders: { 'X-Idempotency-Key': idempotencyKey },
   });
 
-  const newId = String(res.ticketid ?? res.ticket_id ?? res.id ?? res.data?.ticketid ?? '');
+  const newId = String(
+    res.record_id ?? res.ticketid ?? res.ticket_id ?? res.id ?? res.data?.ticketid ?? '',
+  );
   if (!newId) {
     if (res.data) {
       return mapPpTicketToNormalized(res.data, config);
@@ -401,13 +464,26 @@ export async function getTicket(
   ticketId: string,
   config: DeploymentConfig,
 ): Promise<Ticket> {
-  const res = await ppFetch<PpTicketShape | { data?: PpTicketShape }>({
+  const res = await ppFetch<
+    PpTicketShape | PpTicketShape[] | { data?: PpTicketShape | PpTicketShape[] }
+  >({
     method: 'GET',
     path: `/api/tickets/${encodeURIComponent(ticketId)}`,
     config,
     ticketId,
   });
-  const raw = (res as { data?: PpTicketShape }).data ?? (res as PpTicketShape);
+
+  // PP.app returns either a single object, an array of one, or { data: ... }.
+  let raw: PpTicketShape | undefined;
+  if (Array.isArray(res)) {
+    raw = res[0];
+  } else if (res && typeof res === 'object' && 'data' in res) {
+    const d = (res as { data?: PpTicketShape | PpTicketShape[] }).data;
+    raw = Array.isArray(d) ? d[0] : d;
+  } else {
+    raw = res as PpTicketShape;
+  }
+
   if (!raw || (!raw.ticketid && !raw.id)) {
     throw new PpClientNotFoundError(`Ticket ${ticketId} not found`);
   }
@@ -415,11 +491,12 @@ export async function getTicket(
 }
 
 interface PpReplyResponse {
+  status?: boolean;
+  message?: string;
+  record_id?: number | string;
   reply_id?: number | string;
   id?: number | string;
   data?: PpReplyShape;
-  message?: string;
-  status?: boolean;
 }
 
 export async function addReply(
@@ -430,10 +507,13 @@ export async function addReply(
   const extraHeaders: Record<string, string> = {};
   if (reply.source) extraHeaders['X-PP-Source'] = reply.source;
 
+  // PP.app's reply endpoint expects the body field to be `message`
+  // (not `description` — the brief had it wrong; verified live 2026-05-03).
   const res = await ppFetch<PpReplyResponse>({
     method: 'POST',
     path: `/api/tickets/reply/${encodeURIComponent(ticketId)}`,
     body: {
+      message: reply.body,
       description: reply.body,
       isinternal: reply.isInternal ? 1 : 0,
     },
@@ -443,7 +523,7 @@ export async function addReply(
   });
 
   const replyShape: PpReplyShape = res.data ?? {
-    id: res.reply_id ?? res.id,
+    id: res.record_id ?? res.reply_id ?? res.id,
     description: reply.body,
     source: reply.source,
   };

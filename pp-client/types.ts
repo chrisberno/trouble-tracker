@@ -52,6 +52,17 @@ export interface DeploymentConfig {
     resolved?: number;         // Perfex status ID for 'resolved' — optional; resolveTicket throws if absent
     closed: number;            // Perfex status ID for 'closed' (default: 5)
   };
+  // Per-tenant numeric IDs for custom fields. Perfex's POST /api/tickets accepts
+  // custom_fields keyed as custom_fields[<fieldto>][<numeric_id>] = <value>; slug-keyed
+  // shapes are silently dropped. Each deployment must enumerate the IDs of fields it
+  // expects pp-client to populate. Field IDs are local to a tenant — look up via
+  // SELECT id, slug FROM <tenant_prefix>_tblcustomfields.
+  customFieldIds: {
+    ticket: {
+      customer_scope: number;  // ID of the ticket-scoped 'customer_scope' field
+      intake_source: number;   // ID of the ticket-scoped 'intake_source' field
+    };
+  };
 }
 
 // Typed errors — never return undefined or { success: false }

@@ -77,6 +77,12 @@ interface DeploymentConfig {
     resolved?: number;         // optional — resolveTicket throws DeploymentNotConfiguredError if absent
     closed: number;            // upstream status id, default 5
   };
+  customFieldIds: {
+    ticket: {
+      customer_scope: number;  // numeric ID of the ticket-scoped 'customer_scope' custom field
+      intake_source: number;   // numeric ID of the ticket-scoped 'intake_source' custom field
+    };
+  };
 }
 ```
 
@@ -84,8 +90,21 @@ interface DeploymentConfig {
 "resolved" state. `resolveTicket` throws `DeploymentNotConfiguredError`
 when called against a deployment that has not configured it.
 
+`customFieldIds` is REQUIRED. Perfex's POST `/api/tickets` accepts custom
+fields keyed as `custom_fields[<fieldto>][<numeric_field_id>] = <value>`
+— slug-keyed payloads are silently dropped. Each deployment must enumerate
+the numeric IDs of fields it expects pp-client to populate. Field IDs are
+tenant-local; look them up via:
+
+```sql
+SELECT id, slug FROM <tenant_prefix>_tblcustomfields WHERE fieldto='tickets';
+```
+
 Default upstream status ids on the TroubleTracker tenant:
 `open=1, in_progress=2, waiting=4, resolved=3, closed=5`.
+
+Default custom-field IDs on the TroubleTracker tenant (Connie deployment):
+`customer_scope=1, intake_source=2`.
 
 ---
 

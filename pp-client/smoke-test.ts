@@ -15,6 +15,7 @@ const config: DeploymentConfig = {
     })(),
   customerScopeRule: () => 'phase-1-test',
   statusMap: { open: 1, in_progress: 2, waiting: 4, resolved: 3, closed: 5 },
+  customFieldIds: { ticket: { customer_scope: 1, intake_source: 2 } },
 };
 
 async function run() {

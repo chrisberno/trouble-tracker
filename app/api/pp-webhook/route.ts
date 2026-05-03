@@ -24,6 +24,9 @@ const defaultConfig: DeploymentConfig = {
     // resolved: undefined — deployment owner configures this
     closed: 5,
   },
+  // Webhook receiver doesn't write tickets — values are placeholders.
+  // Real ticket-write paths use deployment-specific configs (see deployments/connie/).
+  customFieldIds: { ticket: { customer_scope: 0, intake_source: 0 } },
 };
 
 export async function POST(request: NextRequest): Promise<NextResponse> {

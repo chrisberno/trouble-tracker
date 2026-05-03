@@ -423,6 +423,15 @@ export async function createTicket(
 ): Promise<Ticket> {
   const { customerId, contactId } = await ensureCustomer(input.customer, config);
 
+  // Perfex's POST /api/tickets accepts custom_fields keyed as
+  //   custom_fields[<fieldto>][<numeric_field_id>] = <value>
+  // (handle_custom_fields_post in application/helpers/custom_fields_helper.php
+  // iterates as `foreach ($custom_fields as $fieldto => $fields) { foreach ($fields
+  // as $field_id => $value) { ... } }`). Slug-keyed flat shape is silently dropped
+  // — every adapter must pass numeric IDs from DeploymentConfig.customFieldIds.
+  // Phase 2 regression: prior shape was custom_fields: { customer_scope: ..., intake_source: ... }
+  // which never persisted. Field IDs are tenant-local; look them up via
+  //   SELECT id, slug FROM <tenant_prefix>_tblcustomfields WHERE fieldto='tickets';
   const body: Record<string, unknown> = {
     subject: input.subject,
     body: input.description,
@@ -433,8 +442,10 @@ export async function createTicket(
     priority: PRIORITY_TO_PP[input.priority],
     status: config.statusMap.open,
     custom_fields: {
-      customer_scope: input.customerScope,
-      intake_source: input.intakeSource,
+      tickets: {
+        [config.customFieldIds.ticket.customer_scope]: input.customerScope,
+        [config.customFieldIds.ticket.intake_source]: input.intakeSource,
+      },
     },
   };
 

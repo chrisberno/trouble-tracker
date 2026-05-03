@@ -8,6 +8,7 @@ interface FormData {
   title: string;
   description: string;
   customerName: string;
+  customerEmail: string;
   customerPhone: string;
 }
 
@@ -15,6 +16,7 @@ const EMPTY_FORM: FormData = {
   title: "",
   description: "",
   customerName: "",
+  customerEmail: "",
   customerPhone: "",
 };
 
@@ -158,6 +160,21 @@ export default function IntakePage() {
                 disabled={isSubmitting}
                 className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 placeholder-gray-400 disabled:bg-gray-100"
                 placeholder="Jane Smith"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Your email
+              </label>
+              <input
+                type="email"
+                required
+                value={formData.customerEmail}
+                onChange={(e) => updateField("customerEmail", e.target.value)}
+                disabled={isSubmitting}
+                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 placeholder-gray-400 disabled:bg-gray-100"
+                placeholder="jane@example.com"
               />
             </div>
 

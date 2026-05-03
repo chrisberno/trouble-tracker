@@ -34,12 +34,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     title?: unknown;
     description?: unknown;
     customerName?: unknown;
+    customerEmail?: unknown;
     customerPhone?: unknown;
   };
 
   const title = typeof b.title === 'string' ? b.title : '';
   const description = typeof b.description === 'string' ? b.description : '';
   const customerName = typeof b.customerName === 'string' ? b.customerName : '';
+  const customerEmail = typeof b.customerEmail === 'string' ? b.customerEmail : '';
   const customerPhone = typeof b.customerPhone === 'string' ? b.customerPhone : '';
 
   const customerScope = connieConfig.customerScopeRule({
@@ -47,7 +49,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   });
 
   const result = await handleWebFormIntake(
-    { title, description, customerName, customerPhone, customerScope },
+    { title, description, customerName, customerEmail, customerPhone, customerScope },
     connieConfig,
   );
 

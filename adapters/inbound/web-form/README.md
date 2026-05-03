@@ -22,14 +22,17 @@ interface WebFormIntakePayload {
   title: string;          // ticket subject
   description: string;    // ticket body / "tell us more"
   customerName: string;
+  customerEmail: string;  // required — PP.app /api/contacts requires it
   customerPhone: string;
   customerScope: string;  // resolved server-side BEFORE this is called
 }
 ```
 
-4 user-visible fields. No email, no company per locked CEO defaults
-(2026-05-03). Email field is intentionally omitted — see §6 for the
-known PP.app dedup limitation that follows from this.
+5 user-visible fields. Email was added mid-Phase-2 (2026-05-03) when
+smoke #10 surfaced PP.app's `/api/contacts` requiring email at
+contact-create time. CEO+CTO call: PP.app is the Core, its data model
+wins. Email also re-enables `pp-client.ensureCustomer`'s email-based
+dedup path. Company is still omitted.
 
 ## 2. IntakeResult
 
@@ -63,7 +66,7 @@ however that deployment needs.
 
 | Mode                       | Trigger                                                                   | Handler returns                                                                                                  |
 | -------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Validation error           | Any of title/description/customerName/customerPhone/customerScope blank   | `{ status: 'failure', errorMessage: 'Missing required fields: <list>' }` (route surfaces as 400)                  |
+| Validation error           | Any of title/description/customerName/customerEmail/customerPhone/customerScope blank, or email fails `^.+@.+\..+$` | `{ status: 'failure', errorMessage: 'Missing required fields: <list>' }` or `'Please enter a valid email address.'` (route surfaces as 400) |
 | PP.app downtime / auth     | `PpClientServerError`, `PpClientRateLimitError`, or `PpClientAuthError`   | `{ status: 'failure', errorMessage: 'Support system temporarily unavailable. Please try again shortly.' }` (503)  |
 | Unknown error              | Anything else thrown from `createTicket`                                  | `{ status: 'failure', errorMessage: 'An unexpected error occurred. Please try again.' }` (503)                    |
 
@@ -79,14 +82,7 @@ response. The form (`app/intake/page.tsx`) renders it as a `mailto:`
 link when the response carries it. This keeps the handler reusable
 across deployments without coupling it to deployment config.
 
-## 6. Known limitation: no email → no dedup
-
-Without `customerEmail`, `pp-client.ensureCustomer` cannot deduplicate
-contacts by email — every form submission creates a new PP.app customer
-record. Acceptable for Phase 2; revisit in Phase 4 when the customer
-feedback loop ships.
-
-## 7. Adding a new deployment
+## 6. Adding a new deployment
 
 1. Create `deployments/{id}/config.json` with the same shape as
    `deployments/connie/config.json` (id, ppTenant, statusMap,

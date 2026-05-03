@@ -45,14 +45,14 @@ async function run() {
   console.assert(fetched.subject === ticket.subject, 'fetched subject must match');
 
   // Step 3: addReply (agent — with source)
-  console.log('Step 3: addReply (agent, source=flex)...');
+  console.log('Step 3: addReply (agent, source=test-bridge-a)...');
   const agentReply = await addReply(
     ticket.id,
-    { body: 'Agent reply test — source present', source: 'flex' },
+    { body: 'Agent reply test — source present', source: 'test-bridge-a' },
     config,
   );
   console.log(`  ✅ Agent reply ID: ${agentReply.id}, source: ${agentReply.source}`);
-  console.assert(agentReply.source === 'flex', 'agent reply source must be flex');
+  console.assert(agentReply.source === 'test-bridge-a', 'agent reply source must be test-bridge-a');
   // Note: webhook discrimination verified via Vercel logs — ticket.replied.agent should appear
 
   // Step 4: addReply (customer — no source, HTML body)

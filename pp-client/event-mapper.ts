@@ -1,6 +1,6 @@
 // pp-client/event-mapper.ts
 // Translates raw tt_webhook_bridge payloads into normalized CoreEvent instances.
-// No Twilio, Flex, or bridge-specific knowledge here.
+// No bridge-specific knowledge here.
 // source discrimination is presence/absence ONLY — no string comparison against bridge names.
 //
 // Source read-side decision (Refinement #1):

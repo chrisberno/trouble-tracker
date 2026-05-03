@@ -1,6 +1,7 @@
 // app/api/pp-webhook/route.ts
-// Webhook receiver for PP.app tt_webhook_bridge events.
-// Validates signature, dispatches to pp-client handlers.
+// Webhook receiver. Validates signature and dispatches to pp-client handlers.
+// All upstream-system knowledge lives behind pp-client; this route file only
+// reads env-supplied config values and forwards the raw body.
 // Production routes (app/api/tickets/) are NOT touched.
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -10,10 +11,10 @@ import type { DeploymentConfig } from '@/pp-client/types';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-// Default deployment config for the TroubleTracker tenant.
-// Adapters will pass their own config; this is the webhook receiver's config.
+// Webhook receiver config: tenant URL + token come from env vars set by
+// the deployment owner. No literal upstream domains live in this file.
 const defaultConfig: DeploymentConfig = {
-  tenantUrl: process.env.TROUBLETRACKER_TENANT_URL ?? 'https://troubletracker.peopleperson.app',
+  tenantUrl: process.env.TROUBLETRACKER_TENANT_URL ?? '',
   tenantApiToken: process.env.TROUBLETRACKER_TENANT_API_TOKEN ?? '',
   customerScopeRule: () => 'unknown',
   statusMap: {

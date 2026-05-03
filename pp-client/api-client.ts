@@ -1,6 +1,7 @@
 // pp-client/api-client.ts
 // The ONLY file in TroubleTracker allowed to know PP.app's REST API shape.
-// No Twilio, Flex, TaskRouter, or bridge-specific knowledge here.
+// No bridge-specific knowledge (no contact-channel, routing, or vendor SDK
+// awareness) — those concerns live in adapters, never here.
 
 import type {
   Ticket,

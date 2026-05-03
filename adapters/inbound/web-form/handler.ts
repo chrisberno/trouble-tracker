@@ -10,11 +10,9 @@ export interface WebFormIntakePayload {
   title: string;
   description: string;
   customerName: string;
-  customerEmail: string;
   customerPhone: string;
   customerScope: string;
-  // NOTE: customerEmail added mid-Phase-2 — PP.app /api/contacts requires it.
-  // Company still omitted per CEO defaults.
+  // NOTE: no email, no company per CEO defaults 2026-05-03
 }
 
 export interface IntakeResult {
@@ -30,7 +28,6 @@ export async function handleWebFormIntake(
   const title = (payload.title ?? '').trim();
   const description = (payload.description ?? '').trim();
   const customerName = (payload.customerName ?? '').trim();
-  const customerEmail = (payload.customerEmail ?? '').trim();
   const customerPhoneRaw = (payload.customerPhone ?? '').trim();
   const customerScope = (payload.customerScope ?? '').trim();
 
@@ -38,20 +35,12 @@ export async function handleWebFormIntake(
   if (!title) missing.push('title');
   if (!description) missing.push('description');
   if (!customerName) missing.push('customerName');
-  if (!customerEmail) missing.push('customerEmail');
   if (!customerPhoneRaw) missing.push('customerPhone');
   if (!customerScope) missing.push('customerScope');
   if (missing.length > 0) {
     return {
       status: 'failure',
       errorMessage: `Missing required fields: ${missing.join(', ')}`,
-    };
-  }
-
-  if (!/^.+@.+\..+$/.test(customerEmail)) {
-    return {
-      status: 'failure',
-      errorMessage: 'Please enter a valid email address.',
     };
   }
 
@@ -63,7 +52,7 @@ export async function handleWebFormIntake(
         subject: title,
         description,
         priority: 'medium',
-        customer: { name: customerName, email: customerEmail, phone: customerPhone },
+        customer: { name: customerName, phone: customerPhone },
         customerScope,
         intakeSource: 'web-form',
       },

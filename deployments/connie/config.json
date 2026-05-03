@@ -1,0 +1,27 @@
+{
+  "id": "connie",
+  "displayName": "Connie",
+  "ppTenant": {
+    "url": "https://troubletracker.peopleperson.app",
+    "apiTokenEnvVar": "TROUBLETRACKER_TENANT_API_TOKEN"
+  },
+  "statusMap": {
+    "open": 1,
+    "in_progress": 2,
+    "waiting": 4,
+    "closed": 5
+  },
+  "customerScopes": [
+    { "scope": "NSS",      "refererMatch": "nss.connie.team" },
+    { "scope": "HHOVV",    "refererMatch": "hhovv.connie.team" },
+    { "scope": "Lifeline", "refererMatch": "lifeline.connie.team" }
+  ],
+  "defaultPriority": "medium",
+  "corsAllowlist": [
+    "https://connie.team",
+    "https://nss.connie.team",
+    "https://hhovv.connie.team",
+    "https://lifeline.connie.team"
+  ],
+  "fallbackEmail": "tickets@connie.peopleperson.app"
+}

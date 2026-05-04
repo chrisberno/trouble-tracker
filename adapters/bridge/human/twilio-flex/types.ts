@@ -10,10 +10,10 @@ export interface TwilioBridgeConfig {
   workspaceSid: string;
   supportWorkflowSid: string;
   supportQueueSid: string;
-  conversationsServiceSid: string;   // TT-dedicated service per ledger Phase B B1
+  conversationsServiceSid: string;   // TT-dedicated service per ledger Phase B B1; Phase 4 ACTIVE (atomic-pair pattern uses this for all bridge-created Conversations)
   taskAttributeType: string;         // e.g. 'support_ticket' — distinguishes routing intent
-  taskChannel: string;               // e.g. 'email' — capacity-counting channel
-  iframeBaseUrl: string;             // e.g. 'https://trouble-ticket-app.vercel.app/bridge/twilio-flex/ticket'
+  taskChannel: string;               // e.g. 'email' — capacity-counting channel; Phase 4 task creation uses 'email' specifically (CCTO refinement #1) so basecamp Email.tsx renders native Conversation UI in Task Canvas
+  iframeBaseUrl: string;             // e.g. 'https://trouble-ticket-app.vercel.app/bridge/twilio-flex/ticket' — per-ticket iframe (Phase 3); Phase 8a flips eCRM container url template to customer-profile route
   deploymentId: string;              // e.g. 'connie' — load-bearing for task-webhook discriminator gate
 }
 

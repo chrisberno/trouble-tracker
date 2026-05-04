@@ -10,6 +10,7 @@ import type {
   TicketPriority,
   DeploymentConfig,
   CreateTicketInput,
+  EnrichedCustomer,
 } from './types';
 import {
   PpClientError,
@@ -589,4 +590,181 @@ export async function closeTicket(
   config: DeploymentConfig,
 ): Promise<Ticket> {
   return updateStatus(ticketId, 'closed', config);
+}
+
+// ============================================================================
+// Phase 4 — Customer search by email (powers the customer-profile iframe)
+// ============================================================================
+//
+// Returns EnrichedCustomer[] sorted by lastTicketAuthorAt DESC NULLS LAST so
+// the email-collision tiebreaker is satisfied at the source. Per PP-CTO
+// refinement #3 + CEO email-collision policy (most-recent-ticket-author wins).
+//
+// Implementation strategy (Phase 4 v1.0):
+//   1. Search contacts by email — Perfex /api/contacts/search/{email}
+//      returns matching contacts with userid (customer id) field
+//   2. Dedupe customerIds (multiple contacts on the same customer = same record)
+//   3. Fast path: if only ONE customerId, fetch customer details + skip ticket
+//      lookup (lastTicketAuthorAt is irrelevant when no collision)
+//   4. Slow path: if MULTIPLE customerIds, parallel-fetch customer details +
+//      latest ticket per customer; build EnrichedCustomer + sort
+//
+// Future-state hardening (Phase 5+): if PP-CTO ships a custom endpoint
+// (`/api/tt_bridge/customers_with_last_ticket?email=...`), pp-client switches
+// to a single round-trip. Until then, parallel fetches in the slow path are
+// acceptable at our scale (collision is rare; even N=3-4 with parallel fetches
+// completes in <500ms typical).
+
+interface PpTicketListItem {
+  ticketid?: string | number;
+  id?: string | number;
+  date?: string;
+  datecreated?: string;
+  lastreply?: string;
+  last_reply?: string;
+}
+
+interface PpCustomerShape {
+  userid?: string | number;
+  id?: string | number;
+  company?: string;
+  phonenumber?: string;
+  phone?: string;
+  email?: string;        // sometimes returned by search endpoint
+}
+
+async function fetchCustomerDetails(
+  customerId: string,
+  config: DeploymentConfig,
+): Promise<PpCustomerShape | null> {
+  try {
+    const raw = await ppFetch<PpCustomerShape | { data?: PpCustomerShape }>({
+      method: 'GET',
+      path: `/api/customers/${encodeURIComponent(customerId)}`,
+      config,
+    });
+    if (raw && typeof raw === 'object' && 'data' in raw) {
+      return (raw as { data?: PpCustomerShape }).data ?? null;
+    }
+    return raw as PpCustomerShape;
+  } catch (err) {
+    if (err instanceof PpClientNotFoundError) return null;
+    throw err;
+  }
+}
+
+async function fetchLatestTicketDateForCustomer(
+  customerId: string,
+  config: DeploymentConfig,
+): Promise<string | null> {
+  // Perfex /api/tickets?clientid=N returns customer's tickets. We sort by
+  // most-recent created/updated and take the top entry's timestamp.
+  try {
+    const raw = await ppFetch<PpTicketListItem[] | { data?: PpTicketListItem[] }>({
+      method: 'GET',
+      path: `/api/tickets?clientid=${encodeURIComponent(customerId)}`,
+      config,
+    });
+    const list = Array.isArray(raw) ? raw : (raw?.data ?? []);
+    if (list.length === 0) return null;
+
+    // Find the most recent date across the list. Use lastreply || datecreated || date.
+    let latest: string | null = null;
+    for (const t of list) {
+      const candidate = (t.lastreply ?? t.last_reply ?? t.datecreated ?? t.date) as string | undefined;
+      if (!candidate) continue;
+      if (!latest || candidate > latest) latest = candidate;
+    }
+    if (!latest) return null;
+
+    // Convert to ISO 8601
+    const d = new Date(latest.replace(' ', 'T'));
+    if (isNaN(d.getTime())) return null;
+    return d.toISOString();
+  } catch (err) {
+    if (err instanceof PpClientNotFoundError) return null;
+    // Defensive: any other failure returns null rather than blowing up the search
+    console.warn(JSON.stringify({
+      pp_client: true,
+      route: 'fetchLatestTicketDateForCustomer',
+      warning: 'failed; treating as no tickets',
+      customerId,
+      message: err instanceof Error ? err.message : String(err),
+    }));
+    return null;
+  }
+}
+
+export async function searchCustomersByEmail(
+  email: string,
+  config: DeploymentConfig,
+): Promise<EnrichedCustomer[]> {
+  if (!email || !email.includes('@')) return [];
+
+  // Step 1: search contacts by email
+  let contacts: PpContactShape[];
+  try {
+    const raw = await ppFetch<PpContactShape[] | { data?: PpContactShape[] }>({
+      method: 'GET',
+      path: `/api/contacts/search/${encodeURIComponent(email)}`,
+      config,
+    });
+    contacts = Array.isArray(raw) ? raw : (raw?.data ?? []);
+  } catch (err) {
+    if (err instanceof PpClientNotFoundError) return [];
+    throw err;
+  }
+  if (contacts.length === 0) return [];
+
+  // Step 2: dedupe customerIds (multiple contacts may share a customer)
+  const customerIds = Array.from(
+    new Set(contacts.map((c) => (c.userid !== undefined ? String(c.userid) : '')).filter(Boolean)),
+  );
+  if (customerIds.length === 0) return [];
+
+  // Step 3: fetch customer details for each (parallel)
+  const customerDetails = await Promise.all(
+    customerIds.map((id) => fetchCustomerDetails(id, config).then((d) => ({ id, details: d }))),
+  );
+
+  // Step 4: fast path if only one customer — skip ticket lookup
+  // Slow path: parallel-fetch latest ticket date per customer
+  const isCollision = customerIds.length > 1;
+  const ticketDates = isCollision
+    ? await Promise.all(
+        customerIds.map((id) =>
+          fetchLatestTicketDateForCustomer(id, config).then((d) => ({ id, date: d })),
+        ),
+      )
+    : customerIds.map((id) => ({ id, date: null as string | null }));
+  const ticketDateMap = new Map(ticketDates.map((t) => [t.id, t.date]));
+
+  // Step 5: build EnrichedCustomer[] + sort by lastTicketAuthorAt DESC NULLS LAST
+  const result: EnrichedCustomer[] = customerDetails
+    .map(({ id, details }) => {
+      const orgName = details?.company ?? '';
+      return {
+        id,
+        name: orgName || 'Unknown Customer',
+        email: details?.email ?? email,
+        phone: details?.phonenumber ?? details?.phone,
+        organization: orgName || undefined,
+        lastTicketAuthorAt: ticketDateMap.get(id) ?? null,
+      };
+    })
+    .filter((c) => c.id);
+
+  // DESC NULLS LAST: non-null dates first (descending), then nulls
+  result.sort((a, b) => {
+    if (a.lastTicketAuthorAt && b.lastTicketAuthorAt) {
+      return b.lastTicketAuthorAt.localeCompare(a.lastTicketAuthorAt);
+    }
+    if (a.lastTicketAuthorAt) return -1;
+    if (b.lastTicketAuthorAt) return 1;
+    // Both null — fall back to most-recently-created customer record (id desc)
+    // (PP customer ids are sequential so this approximates created_at desc)
+    return Number(b.id) - Number(a.id);
+  });
+
+  return result;
 }

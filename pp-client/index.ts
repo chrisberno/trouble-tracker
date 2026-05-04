@@ -14,6 +14,7 @@ export {
   updateStatus,
   resolveTicket,
   closeTicket,
+  searchCustomersByEmail,
 } from './api-client';
 export type {
   Ticket,
@@ -23,6 +24,7 @@ export type {
   TicketPriority,
   DeploymentConfig,
   CreateTicketInput,
+  EnrichedCustomer,
 } from './types';
 export {
   PpClientError,

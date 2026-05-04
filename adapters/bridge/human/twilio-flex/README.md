@@ -4,20 +4,28 @@ Twilio Flex bridge adapter — the first concrete bridge in the Onreb portfolio.
 Lives at `adapters/bridge/human/twilio-flex/` per Manifesto v2.2 layout
 (`human/` segment maps to `resolverType: "human"` per the Bridge Contract).
 
-**Phase 3 of TroubleTracker Sprint 1.0** (ONR-77). Brief at
-`vault/projects/trouble-tracker-app/technical/dev-logs/traycer-brief-phase-3.md`.
+**Phase 3 → Phase 4 of TroubleTracker Sprint 1.0** (ONR-77). Briefs at
+`vault/projects/trouble-tracker-app/technical/dev-logs/traycer-brief-phase-3.md` (v1.3, shipped) and `traycer-brief-phase-4.md` (v1.0 official, shipped).
 
-> **Phase 3 v2 pivot (2026-05-04):** Outbound originally specified Flex
-> Interactions API (`POST flex.twilio.com/v1/Interactions`); after live e2e
-> smoke (ticket 15) revealed that endpoint rejects our auth + body shape on
-> this account, pivoted to **TaskRouter Tasks API** directly
-> (`POST taskrouter.twilio.com/v1/Workspaces/{WS}/Tasks`). This matches
-> production patterns in both legacy `lib/taskrouter.ts` (TT) and Connie's
-> basecamp-v26.02 — known-working for ~1 year on the same workspace. The
-> trade-off: no Twilio Conversation per task in Phase 3, so agent reply
-> round-trip is iframe-driven (status flip + customer reply + internal note
-> buttons in `app/bridge/twilio-flex/ticket/[id]/`). Phase 4 may revisit
-> Conversations integration.
+> **Phase 4 (2026-05-04):** Email-pattern UX for trouble tickets. Bridge
+> creates a Twilio Conversation alongside each Task on `ticket.created`
+> (atomic-pair pattern with mapping-row-first + uniqueName idempotency +
+> compensating delete on Task fail). Customer replies on PP push into the
+> linked Conversation (so Task Canvas in Flex shows them inline via the
+> native email UI). Agent replies in Flex composer fire the Conversations
+> onMessageAdded webhook → bridge writes to PP with `source: 'flex'` for
+> loop prevention. New customer-profile iframe at
+> `/bridge/twilio-flex/customer-profile/[email]` ready for Phase 8a cutover
+> when eCRM container URL template flips from per-ticket → per-customer.
+>
+> **Phase 3 v2 pivot history (2026-05-04):** Phase 3 outbound originally
+> used Flex Interactions API; pivoted to TaskRouter Tasks API directly
+> after the former rejected our auth + body on the CCT account. Phase 3
+> shipped iframe-driven agent UX (status flip / customer reply / internal
+> note in the per-ticket iframe). Phase 4 keeps those iframe routes intact
+> (still functional) AND adds the Conversations layer + customer-profile
+> iframe. Both Phase 3 + Phase 4 surfaces co-exist; Phase 8a cutover
+> determines which one drives the eCRM container.
 
 ---
 

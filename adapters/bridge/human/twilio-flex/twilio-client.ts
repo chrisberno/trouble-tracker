@@ -36,7 +36,7 @@ export class TwilioServerError extends TwilioClientError {
 // ============================================================================
 
 interface TwilioFetchOptions {
-  method: 'GET' | 'POST';
+  method: 'GET' | 'POST' | 'DELETE';
   url: string;                            // full URL
   formBody?: Record<string, string>;      // x-www-form-urlencoded
   authToken: string;
@@ -257,13 +257,175 @@ export async function createTask(
 }
 
 // ============================================================================
-// Conversations API — post a message to an existing Conversation
+// Conversations API — create / fetch / delete / post messages
 //
-// Phase 3 NOTE: this function is unused after the Phase 3 pivot to TaskRouter
-// Tasks API. Kept defined (not deleted) for Phase 4 forward-compat when we
-// wire the customer email feedback loop, which may need to push customer
-// emails through Conversations into agent-side Flex UIs. Until Phase 4
-// activates this, no callers exist; tree-shaker may remove it.
+// Phase 4 (2026-05-04) activates the full Conversations surface.
+// `createConversation` includes a `uniqueName` idempotency token (PP-CTO
+// refinement #2): catch 409 → fetchByUniqueName → proceed. Standard Twilio
+// idempotency pattern. `deleteConversation` is the compensating-delete path
+// when a Task creation fails after Conversation succeeded; catches 404
+// silently (already-deleted state).
+// ============================================================================
+
+export interface CreateConversationInput {
+  friendlyName: string;
+  uniqueName: string;             // PP-CTO refinement #2: tt-ticket-<id>-<deploymentId>
+  attributes?: Record<string, unknown>;
+}
+
+interface RawConversation {
+  sid?: string;
+  account_sid?: string;
+  chat_service_sid?: string;
+  unique_name?: string;
+  friendly_name?: string;
+  attributes?: string;            // JSON string
+  state?: string;
+  date_created?: string;
+}
+
+export interface ConversationRef {
+  sid: string;
+  uniqueName?: string;
+  state?: string;
+}
+
+/**
+ * POST /v1/Services/{IS}/Conversations on conversations.twilio.com.
+ *
+ * Idempotency: Twilio enforces uniqueness on uniqueName at the service level.
+ * If we retry after a network blip and the Conversation was already created,
+ * Twilio returns 409. We catch that, fetch by uniqueName, and proceed — same
+ * end-state (the existing Conversation), no orphan, no duplicate.
+ *
+ * Per PP-CTO refinement #2: this prevents the duplicate-Conversation-on-retry
+ * failure mode that would otherwise leak Twilio resources + confuse the
+ * mapping table.
+ */
+export async function createConversation(
+  input: CreateConversationInput,
+  config: TwilioBridgeConfig,
+  idempotencyKey: string,
+): Promise<ConversationRef> {
+  const url = `https://conversations.twilio.com/v1/Services/${encodeURIComponent(
+    config.conversationsServiceSid,
+  )}/Conversations`;
+
+  const formBody: Record<string, string> = {
+    FriendlyName: input.friendlyName,
+    UniqueName: input.uniqueName,
+  };
+  if (input.attributes !== undefined) {
+    formBody.Attributes = JSON.stringify(input.attributes);
+  }
+
+  try {
+    const raw = await twilioFetch<RawConversation>({
+      method: 'POST',
+      url,
+      formBody,
+      accountSid: config.accountSid,
+      authToken: config.authToken,
+      idempotencyKey,
+    });
+
+    const sid = raw.sid ?? '';
+    if (!sid) {
+      throw new TwilioServerError(
+        `createConversation: missing sid in Twilio response (got: ${JSON.stringify(raw)})`,
+      );
+    }
+    return { sid, uniqueName: raw.unique_name, state: raw.state };
+  } catch (err) {
+    // 409 Conflict — Conversation with this uniqueName already exists.
+    // Fetch it by uniqueName + return.
+    if (err instanceof TwilioClientError && err.statusCode === 409) {
+      console.log(JSON.stringify({
+        twilio_client: true,
+        method: 'createConversation',
+        info: 'duplicate uniqueName; fetching existing Conversation',
+        uniqueName: input.uniqueName,
+      }));
+      return fetchConversationByUniqueName(input.uniqueName, config);
+    }
+    throw err;
+  }
+}
+
+/**
+ * GET /v1/Services/{IS}/Conversations/{uniqueName} — Twilio accepts uniqueName
+ * in place of SID for this endpoint. Returns the existing Conversation.
+ */
+export async function fetchConversationByUniqueName(
+  uniqueName: string,
+  config: TwilioBridgeConfig,
+): Promise<ConversationRef> {
+  const url = `https://conversations.twilio.com/v1/Services/${encodeURIComponent(
+    config.conversationsServiceSid,
+  )}/Conversations/${encodeURIComponent(uniqueName)}`;
+
+  const raw = await twilioFetch<RawConversation>({
+    method: 'GET',
+    url,
+    accountSid: config.accountSid,
+    authToken: config.authToken,
+  });
+
+  const sid = raw.sid ?? '';
+  if (!sid) {
+    throw new TwilioServerError(
+      `fetchConversationByUniqueName: missing sid in Twilio response (got: ${JSON.stringify(raw)})`,
+    );
+  }
+  return { sid, uniqueName: raw.unique_name, state: raw.state };
+}
+
+/**
+ * DELETE /v1/Services/{IS}/Conversations/{sid} — compensating delete on
+ * orphaned Conversation when Task creation fails. Catches 404 silently
+ * (already-deleted state, possibly from a prior compensating-delete attempt).
+ */
+export async function deleteConversation(
+  conversationSid: string,
+  config: TwilioBridgeConfig,
+): Promise<void> {
+  const url = `https://conversations.twilio.com/v1/Services/${encodeURIComponent(
+    config.conversationsServiceSid,
+  )}/Conversations/${encodeURIComponent(conversationSid)}`;
+
+  try {
+    await twilioFetch<unknown>({
+      method: 'DELETE',
+      url,
+      accountSid: config.accountSid,
+      authToken: config.authToken,
+    });
+  } catch (err) {
+    // 404 = already deleted; log + proceed (PP-CTO precision item #2)
+    if (err instanceof TwilioClientError && err.statusCode === 404) {
+      console.log(JSON.stringify({
+        twilio_client: true,
+        method: 'deleteConversation',
+        info: 'compensating delete: 404 (already deleted)',
+        conversationSid,
+      }));
+      return;
+    }
+    // Real error — log and let caller decide; don't throw out of compensating
+    // path (we're already in a failure state and don't want to mask the
+    // original error).
+    console.error(JSON.stringify({
+      twilio_client: true,
+      method: 'deleteConversation',
+      error: 'compensating delete failed',
+      conversationSid,
+      message: err instanceof Error ? err.message : String(err),
+    }));
+  }
+}
+
+// ============================================================================
+// Conversations API — post a message to an existing Conversation
 // ============================================================================
 
 export interface PostMessageInput {
@@ -332,11 +494,10 @@ export async function postConversationMessage(
 export interface TwilioClient {
   config: TwilioBridgeConfig;
   createTask: (input: CreateTaskInput, idempotencyKey: string) => Promise<CreateTaskResult>;
-  /**
-   * Phase 4 forward-compat — not used in Phase 3 (no Conversations layer wired
-   * after the TaskRouter Tasks API pivot). Kept on the client surface so Phase 4
-   * can light it up without API churn.
-   */
+  // Phase 4 active surface
+  createConversation: (input: CreateConversationInput, idempotencyKey: string) => Promise<ConversationRef>;
+  fetchConversationByUniqueName: (uniqueName: string) => Promise<ConversationRef>;
+  deleteConversation: (conversationSid: string) => Promise<void>;
   postConversationMessage: (input: PostMessageInput, idempotencyKey: string) => Promise<PostMessageResult>;
   verifySignature: (opts: Omit<Parameters<typeof verifyTwilioSignature>[0], 'authToken'>) => boolean;
 }
@@ -345,6 +506,9 @@ export function buildTwilioClient(config: TwilioBridgeConfig): TwilioClient {
   return {
     config,
     createTask: (input, idempotencyKey) => createTask(input, config, idempotencyKey),
+    createConversation: (input, idempotencyKey) => createConversation(input, config, idempotencyKey),
+    fetchConversationByUniqueName: (uniqueName) => fetchConversationByUniqueName(uniqueName, config),
+    deleteConversation: (conversationSid) => deleteConversation(conversationSid, config),
     postConversationMessage: (input, idempotencyKey) => postConversationMessage(input, config, idempotencyKey),
     verifySignature: (opts) => verifyTwilioSignature({ ...opts, authToken: config.authToken }),
   };

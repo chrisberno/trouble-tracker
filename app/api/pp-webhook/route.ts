@@ -7,6 +7,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { handleWebhook } from '@/pp-client/index';
 import type { DeploymentConfig } from '@/pp-client/types';
+import { register as registerTwilioBridge } from '@/adapters/bridge/human/twilio-flex';
+import { connieTwilioConfig } from '@/deployments/connie';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -28,6 +30,12 @@ const defaultConfig: DeploymentConfig = {
   // Real ticket-write paths use deployment-specific configs (see deployments/connie/).
   customFieldIds: { ticket: { customer_scope: 0, intake_source: 0 } },
 };
+
+// Phase 3: register the Twilio Flex bridge against pp-client's event dispatch.
+// Idempotent + lazy: subscribe runs once at module load (cold start). The bridge
+// only consumes events for the Connie deployment in Sprint 1.0; future
+// deployments would add their own register() call here.
+registerTwilioBridge(connieTwilioConfig);
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {

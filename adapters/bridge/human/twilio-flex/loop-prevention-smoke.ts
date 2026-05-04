@@ -31,6 +31,7 @@ function buildMockTwilio(): TwilioClient & { _calls: string[]; _shouldFailTask: 
       supportWorkflowSid: 'WWtest',
       supportQueueSid: 'WQtest',
       conversationsServiceSid: 'IStest',
+      messagingServiceSid: 'MGtest',     // Phase 4.1
       taskAttributeType: 'support_ticket',
       taskChannel: 'email',
       iframeBaseUrl: 'https://test/bridge/twilio-flex/ticket',
@@ -53,6 +54,10 @@ function buildMockTwilio(): TwilioClient & { _calls: string[]; _shouldFailTask: 
     },
     deleteConversation: async () => {
       calls.push('deleteConversation');
+    },
+    addEmailParticipant: async () => {
+      calls.push('addEmailParticipant');
+      return { sid: 'MBtest', conversationSid: 'CHtest', bindingType: 'email', bindingAddress: 'test@example.com' };
     },
     postConversationMessage: async () => {
       calls.push('postConversationMessage');

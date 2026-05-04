@@ -271,6 +271,17 @@ export interface CreateConversationInput {
   friendlyName: string;
   uniqueName: string;             // PP-CTO refinement #2: tt-ticket-<id>-<deploymentId>
   attributes?: Record<string, unknown>;
+  /**
+   * Phase 4.1 (2026-05-04): Twilio Messaging Service SID for email-channel
+   * routing. Required for the Conversation to be bindable by Flex's email
+   * channel client when an agent accepts an email-channel Task. Without it,
+   * Flex's worker→Conversation binding step fails silently and the agent
+   * gets stuck on a loading spinner.
+   *
+   * Pattern extracted from existing CCT email Conversations 2026-05-04:
+   *   messaging_service_sid: "MGb54486ac3ea27bcf03dbda3eb4e86aeb"
+   */
+  messagingServiceSid?: string;
 }
 
 interface RawConversation {
@@ -317,6 +328,9 @@ export async function createConversation(
   };
   if (input.attributes !== undefined) {
     formBody.Attributes = JSON.stringify(input.attributes);
+  }
+  if (input.messagingServiceSid) {
+    formBody.MessagingServiceSid = input.messagingServiceSid;
   }
 
   try {
@@ -425,6 +439,99 @@ export async function deleteConversation(
 }
 
 // ============================================================================
+// Conversations API — add email-channel customer participant
+//
+// Phase 4.1 (2026-05-04): canonical pattern extracted from existing CCT email
+// Conversations. For Flex's email channel to bind a worker to the Conversation
+// when an agent accepts the linked Task, the Conversation MUST have a customer
+// participant with messaging_binding type=email pre-created. Without this,
+// Flex's worker-binding step fails silently and the agent sees a loading
+// spinner (caught during Phase 4 e2e session with Andrea Lavado on ticket 19).
+//
+// Canonical participant shape (from CCT's CHb31b031fa44a411285d43447a8c42ca8):
+//   messaging_binding.address: "<customer email>"
+//   messaging_binding.level: "to"
+//   messaging_binding.name: "<customer display name>"
+//   messaging_binding.type: "email"
+//   messaging_binding.proxy_address: null  (email channel; routing handled by
+//     the Conversation's MessagingServiceSid, not per-participant proxy)
+// ============================================================================
+
+export interface AddEmailParticipantInput {
+  conversationSid: string;
+  address: string;            // customer email
+  name?: string;              // customer display name (optional)
+}
+
+interface RawParticipant {
+  sid?: string;
+  conversation_sid?: string;
+  identity?: string | null;
+  messaging_binding?: {
+    address?: string;
+    level?: string;
+    name?: string | null;
+    proxy_address?: string | null;
+    type?: string;
+  } | null;
+}
+
+export interface ParticipantRef {
+  sid: string;
+  conversationSid: string;
+  bindingType?: string;
+  bindingAddress?: string;
+}
+
+/**
+ * POST /v1/Services/{IS}/Conversations/{CH}/Participants — add a customer
+ * participant with messaging_binding for the email channel. Required step
+ * after Conversation create for Flex's worker-binding to succeed when an
+ * agent accepts the linked Task.
+ *
+ * Phase 4.1 fix: this missing step was the root cause of Andrea's stuck
+ * spinner during ticket 19 testing on 2026-05-04.
+ */
+export async function addEmailParticipant(
+  input: AddEmailParticipantInput,
+  config: TwilioBridgeConfig,
+): Promise<ParticipantRef> {
+  const url = `https://conversations.twilio.com/v1/Services/${encodeURIComponent(
+    config.conversationsServiceSid,
+  )}/Conversations/${encodeURIComponent(input.conversationSid)}/Participants`;
+
+  const formBody: Record<string, string> = {
+    'MessagingBinding.Address': input.address,
+    'MessagingBinding.Type': 'email',
+    'MessagingBinding.Level': 'to',
+  };
+  if (input.name) {
+    formBody['MessagingBinding.Name'] = input.name;
+  }
+
+  const raw = await twilioFetch<RawParticipant>({
+    method: 'POST',
+    url,
+    formBody,
+    accountSid: config.accountSid,
+    authToken: config.authToken,
+  });
+
+  const sid = raw.sid ?? '';
+  if (!sid) {
+    throw new TwilioServerError(
+      `addEmailParticipant: missing sid in Twilio response (got: ${JSON.stringify(raw)})`,
+    );
+  }
+  return {
+    sid,
+    conversationSid: raw.conversation_sid ?? input.conversationSid,
+    bindingType: raw.messaging_binding?.type,
+    bindingAddress: raw.messaging_binding?.address,
+  };
+}
+
+// ============================================================================
 // Conversations API — post a message to an existing Conversation
 // ============================================================================
 
@@ -498,6 +605,8 @@ export interface TwilioClient {
   createConversation: (input: CreateConversationInput, idempotencyKey: string) => Promise<ConversationRef>;
   fetchConversationByUniqueName: (uniqueName: string) => Promise<ConversationRef>;
   deleteConversation: (conversationSid: string) => Promise<void>;
+  // Phase 4.1 — required step after Conversation create for Flex worker-binding to succeed
+  addEmailParticipant: (input: AddEmailParticipantInput) => Promise<ParticipantRef>;
   postConversationMessage: (input: PostMessageInput, idempotencyKey: string) => Promise<PostMessageResult>;
   verifySignature: (opts: Omit<Parameters<typeof verifyTwilioSignature>[0], 'authToken'>) => boolean;
 }
@@ -509,6 +618,7 @@ export function buildTwilioClient(config: TwilioBridgeConfig): TwilioClient {
     createConversation: (input, idempotencyKey) => createConversation(input, config, idempotencyKey),
     fetchConversationByUniqueName: (uniqueName) => fetchConversationByUniqueName(uniqueName, config),
     deleteConversation: (conversationSid) => deleteConversation(conversationSid, config),
+    addEmailParticipant: (input) => addEmailParticipant(input, config),
     postConversationMessage: (input, idempotencyKey) => postConversationMessage(input, config, idempotencyKey),
     verifySignature: (opts) => verifyTwilioSignature({ ...opts, authToken: config.authToken }),
   };

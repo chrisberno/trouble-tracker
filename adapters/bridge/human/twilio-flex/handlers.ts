@@ -2,6 +2,14 @@
 // Pure event handlers: receive normalized CoreEvents from pp-client; call
 // Twilio APIs via twilio-client; persist mappings via bridge-db.
 //
+// PIVOT (Phase 3 v2, 2026-05-04): outbound now uses TaskRouter Tasks API
+// directly (not Flex Interactions API). Attributes shape mirrors legacy
+// `lib/taskrouter.ts:39-64` so basecamp's Flex plugin renders the resulting
+// task identically to legacy NSS PCA tasks (line 1 friendly name, line 2
+// origin/customerScope). Phase 3 NEW additions on top of legacy parity:
+// `customerEmail`, `customerScope`, and the load-bearing `deploymentId`
+// for the task-webhook discriminator gate.
+//
 // Loop prevention: each handler short-circuits when event.source === 'flex'
 // (the BRIDGE_METADATA.source tag). This is the same source-tag transit
 // convention pp-client uses on its outbound write path (X-PP-Source header).
@@ -13,14 +21,22 @@ import type { CoreEvent } from '@/pp-client/types';
 import type { TwilioClient } from './twilio-client';
 import {
   upsertBridgeMapping,
-  getBridgeMappingByTicketId,
   isBridgeKeyProcessed,
   markBridgeKeyProcessed,
 } from './bridge-db';
-import { BRIDGE_METADATA } from './types';
+
+// Map our normalized priority → legacy TaskRouter Priority form param.
+// Mirrors `lib/taskrouter.ts:70` exactly (high=0, medium=5, low=10).
+const PRIORITY_TO_TASKROUTER: Record<string, number> = { high: 0, medium: 5, low: 10 };
+
+// Match legacy FriendlyName sanitization rules (`lib/taskrouter.ts:69`):
+// strip everything that's not a word char, whitespace, or hyphen.
+function sanitizeFriendlyName(title: string): string {
+  return title.replace(/[^\w\s-]/g, '');
+}
 
 // ============================================================================
-// onTicketCreated — outbound: PP ticket.created → Twilio Interaction (Task + Conversation)
+// onTicketCreated — outbound: PP ticket.created → TaskRouter Task in CCT WorkBench
 // ============================================================================
 
 export async function onTicketCreated(
@@ -28,7 +44,7 @@ export async function onTicketCreated(
   twilio: TwilioClient,
 ): Promise<void> {
   const ticket = event.ticket;
-  const idempotencyKey = `twilio:interaction:${ticket.id}`;
+  const idempotencyKey = `twilio:task:${ticket.id}`;
 
   if (await isBridgeKeyProcessed(idempotencyKey)) {
     console.log(JSON.stringify({
@@ -42,31 +58,72 @@ export async function onTicketCreated(
   }
 
   const profileUrl = `${twilio.config.iframeBaseUrl}/${ticket.id}`;
+  const priorityNum = PRIORITY_TO_TASKROUTER[ticket.priority] ?? 5;
+
+  // Full legacy parity attributes (per `lib/taskrouter.ts:39-64`) PLUS Phase 3
+  // additions (deploymentId, customerEmail, customerScope). The basecamp Flex
+  // plugin reads `origin` for queue list line 2 (per CCTO Email.tsx companion
+  // change); we set both `origin` AND `customerScope` to the same value for
+  // backward-compat across plugin versions.
+  const attributes = {
+    name: `Support Ticket: ${ticket.subject}`,
+    type: 'support_ticket',
+    skill: 'Support',
+
+    profile_url: profileUrl,
+
+    ticketId: ticket.id,
+    title: ticket.subject,
+    description: ticket.description,
+    urgency: ticket.priority,                  // legacy field name
+    priority: ticket.priority,                 // brief field name (same value)
+
+    customerName: ticket.customer.name,
+    customerPhone: ticket.customer.phone ?? '',
+    customerEmail: ticket.customer.email ?? '',          // Phase 3 NEW (Phase 2 form added)
+    customerScope: ticket.customerScope,                 // Phase 3 NEW (semantically same as origin)
+
+    customers: {
+      name: ticket.customer.name,
+      phone: ticket.customer.phone ?? '',
+      organization: ticket.customerScope,                // legacy used `origin` here
+    },
+
+    origin: ticket.customerScope,                        // backward-compat for basecamp Email.tsx
+    timestamp: new Date().toISOString(),
+    channel: 'support-ticket',
+    channelType: 'support',
+    conversationsTaskKey: `support_ticket_${ticket.id}`,
+
+    // Phase 3 LOAD-BEARING — discriminator gate in app/api/bridge/twilio-flex/
+    // task-webhook/route.ts shorts-circuits any task without this field, OR
+    // with a non-matching value. Without this, B3 fire would close legacy
+    // Postgres ticket IDs against the TT tenant.
+    deploymentId: twilio.config.deploymentId,
+  };
 
   try {
-    const result = await twilio.createInteraction(
+    const result = await twilio.createTask(
       {
-        subject: ticket.subject,
-        attributes: {
-          profile_url: profileUrl,
-          ticketId: ticket.id,
-          deploymentId: twilio.config.deploymentId,   // load-bearing for task-webhook discriminator gate
-          customerScope: ticket.customerScope,
-          customerName: ticket.customer.name,
-          customerEmail: ticket.customer.email,
-          customerPhone: ticket.customer.phone,
-          priority: ticket.priority,
-          type: twilio.config.taskAttributeType,
-        },
+        workflowSid: twilio.config.supportWorkflowSid,
+        // Legacy uses 'default' (lib/taskrouter.ts:68). Plugin's Email.tsx
+        // queue list rendering keys off this.
+        taskChannel: 'default',
+        friendlyName: sanitizeFriendlyName(`Support Ticket: ${ticket.subject}`),
+        priority: priorityNum,
+        timeout: 3600,                          // legacy default (lib/taskrouter.ts:71)
+        attributes,
       },
       idempotencyKey,
     );
 
     await upsertBridgeMapping({
       ticketId: ticket.id,
-      interactionSid: result.interactionSid,
-      conversationSid: result.conversationSid,
-      taskSid: result.taskSid ?? null,
+      // Phase 3 pivot: TaskRouter Tasks API doesn't create Interaction or
+      // Conversation. Both fields are persisted as null; Phase 4 may populate.
+      interactionSid: null,
+      conversationSid: null,
+      taskSid: result.taskSid,
     });
 
     await markBridgeKeyProcessed(idempotencyKey);
@@ -76,9 +133,8 @@ export async function onTicketCreated(
       handler: 'onTicketCreated',
       ok: true,
       ticketId: ticket.id,
-      interactionSid: result.interactionSid,
-      conversationSid: result.conversationSid,
       taskSid: result.taskSid,
+      deploymentId: twilio.config.deploymentId,
     }));
   } catch (err) {
     console.error(JSON.stringify({
@@ -92,91 +148,19 @@ export async function onTicketCreated(
 }
 
 // ============================================================================
-// onTicketRepliedCustomer — outbound: PP customer-side reply → Twilio Conversation message
-// ============================================================================
-
-export async function onTicketRepliedCustomer(
-  event: Extract<CoreEvent, { kind: 'ticket.replied.customer' }>,
-  twilio: TwilioClient,
-): Promise<void> {
-  // Loop prevention: if THIS event was caused by a bridge-side write (source: 'flex'
-  // on the reply), short-circuit. This shouldn't fire for ticket.replied.customer
-  // since customer replies don't carry the flex source tag, but be defensive.
-  if (event.reply.source === BRIDGE_METADATA.source) {
-    console.log(JSON.stringify({
-      bridge: 'twilio-flex',
-      handler: 'onTicketRepliedCustomer',
-      info: 'loop prevention: skipping bridge-originated reply',
-      ticketId: event.ticketId,
-      replyId: event.reply.id,
-    }));
-    return;
-  }
-
-  const idempotencyKey = `twilio:message:${event.reply.id}`;
-  if (await isBridgeKeyProcessed(idempotencyKey)) {
-    console.log(JSON.stringify({
-      bridge: 'twilio-flex',
-      handler: 'onTicketRepliedCustomer',
-      info: 'duplicate event skipped',
-      ticketId: event.ticketId,
-      replyId: event.reply.id,
-    }));
-    return;
-  }
-
-  const mapping = await getBridgeMappingByTicketId(event.ticketId);
-  if (!mapping) {
-    console.warn(JSON.stringify({
-      bridge: 'twilio-flex',
-      handler: 'onTicketRepliedCustomer',
-      warning: 'no bridge mapping for ticket; ticket likely created outside this bridge',
-      ticketId: event.ticketId,
-      replyId: event.reply.id,
-    }));
-    return;
-  }
-
-  try {
-    const result = await twilio.postConversationMessage(
-      {
-        conversationSid: mapping.conversationSid,
-        body: event.reply.body,
-        author: 'customer',
-      },
-      idempotencyKey,
-    );
-
-    await markBridgeKeyProcessed(idempotencyKey);
-
-    console.log(JSON.stringify({
-      bridge: 'twilio-flex',
-      handler: 'onTicketRepliedCustomer',
-      ok: true,
-      ticketId: event.ticketId,
-      replyId: event.reply.id,
-      messageSid: result.messageSid,
-      conversationSid: result.conversationSid,
-    }));
-  } catch (err) {
-    console.error(JSON.stringify({
-      bridge: 'twilio-flex',
-      handler: 'onTicketRepliedCustomer',
-      error: err instanceof Error ? err.message : String(err),
-      ticketId: event.ticketId,
-      replyId: event.reply.id,
-    }));
-    throw err;
-  }
-}
-
-// ============================================================================
-// onTicketRepliedAgent — short-circuit (Phase 3 doesn't fire any side effect for
-// agent replies; they originated from Flex via inbound webhook, NOT from PP).
+// onTicketRepliedAgent — observe-only (Phase 3 takes no Twilio-side action)
 //
-// Loop prevention: if reply.source === 'flex', it was OUR write — definitely skip.
-// Even if not 'flex', agent replies originate inside PP (admin UI etc.) — Phase 3
-// doesn't echo those back to Flex. Phase 4 may decide otherwise.
+// Customer replies arriving via PP webhook (CoreEvent kind 'ticket.replied.customer')
+// would normally be pushed into a Twilio Conversation so the agent in WorkBench
+// sees them inline. After the Phase 3 pivot to TaskRouter Tasks API, we don't
+// have a Conversation per task — agents see customer replies via the iframe
+// (page.tsx renders the reply log fetched via pp-client). Phase 4 may revisit.
+//
+// Agent replies originate from inside the iframe (POST /api/bridge/twilio-flex/
+// customer-reply or /internal-note) and are tagged `source: 'flex'` on PP
+// addReply. PP fires ticket.replied.agent webhook in response; this handler
+// observes it but takes no Twilio-side action — the source tag prevents loops
+// regardless.
 // ============================================================================
 
 export async function onTicketRepliedAgent(
@@ -186,7 +170,7 @@ export async function onTicketRepliedAgent(
   console.log(JSON.stringify({
     bridge: 'twilio-flex',
     handler: 'onTicketRepliedAgent',
-    info: 'agent-side reply observed; Phase 3 takes no action',
+    info: 'agent-side reply observed; Phase 3 takes no Twilio-side action',
     ticketId: event.ticketId,
     replyId: event.reply.id,
     source: event.reply.source,

@@ -155,95 +155,115 @@ export function verifyTwilioSignature(opts: {
 }
 
 // ============================================================================
-// Interactions API — create a Task + underlying Conversation in one call
+// TaskRouter Tasks API — create a Task directly on the Workspace
+//
+// PIVOT (Phase 3 v2, 2026-05-04): the original brief specified the Flex
+// Interactions API (`POST flex.twilio.com/v1/Interactions`). Live e2e smoke
+// (ticket 15) revealed that endpoint rejects our auth + body across many
+// shape variants on this account. The legacy production code at
+// `lib/taskrouter.ts:75-85` AND Connie's basecamp-v26.02
+// (taskrouter.private.js:194-213) both use the TaskRouter Tasks API directly
+// on the same workspace + same auth — known-working in production for ~1 year.
+// Pivoted Phase 3 to match that proven pattern.
+//
+// What we lose: Twilio Interactions doesn't auto-create a Conversation, so
+// agent reply round-trip via WorkBench's native Conversation UI is N/A.
+// Phase 3 agent UX is iframe-driven (status flip, customer reply, internal
+// note buttons in our iframe POST to bridge endpoints).
+//
+// Phase 4 may revisit Conversations integration when we wire the customer
+// email loop. `postConversationMessage()` is kept defined below for that
+// forward-compat use; not called in Phase 3.
 // ============================================================================
 
-export interface CreateInteractionInput {
-  subject: string;
-  attributes: Record<string, string | number | undefined>;  // task attributes (incl. profile_url, ticketId, deploymentId, customerScope, customerName/email/phone, priority, type)
+export interface CreateTaskInput {
+  workflowSid: string;
+  taskChannel: string;          // unique_name: 'default', 'email', 'voice', 'chat', etc.
+  friendlyName: string;         // drives queue list line 1; legacy: `Support Ticket: <title>`
+  priority: number;             // legacy mapping: high=0, medium=5, low=10
+  timeout: number;              // seconds; legacy default 3600
+  attributes: Record<string, unknown>;  // serialized as JSON in the Attributes form param
 }
 
-export interface CreateInteractionResult {
-  interactionSid: string;
-  conversationSid: string;
-  taskSid?: string;        // populated by Twilio when routing creates a Task
+export interface CreateTaskResult {
+  taskSid: string;
+  attributes: Record<string, unknown>;
 }
 
-interface RawInteraction {
+interface RawTask {
   sid?: string;
-  channel?: { sid?: string; type?: string };
-  routing?: {
-    properties?: { sid?: string; task_sid?: string };
-    reservation_sid?: string;
-  };
+  task_sid?: string;
+  attributes?: string;          // Twilio returns this as a JSON string
+  workflow_sid?: string;
+  workspace_sid?: string;
+  date_created?: string;
 }
 
 /**
- * POST /v1/Interactions on flex.twilio.com.
- * Creates an Interaction, which Twilio expands into:
- *   - a Conversation (the messaging substrate)
- *   - a Task in TaskRouter (assigned to the workflow's queue)
- * The conversationSid is what we persist; subsequent agent messages flow
- * through the Conversations Service-level webhook attached to that service.
+ * POST /v1/Workspaces/{WS}/Tasks on taskrouter.twilio.com.
+ *
+ * Form-encoded body shape mirrors `lib/taskrouter.ts:66-85` exactly so the
+ * resulting task is rendered by basecamp's Flex plugin identically to legacy
+ * NSS PCA tasks (line 1 friendly name, line 2 origin/customerScope, etc.).
+ *
+ * Auth: Basic accountSid:authToken. Same auth that drives B3 (TaskRouter
+ * event-callback URL) — known-working on this account.
  */
-export async function createInteraction(
-  input: CreateInteractionInput,
+export async function createTask(
+  input: CreateTaskInput,
   config: TwilioBridgeConfig,
   idempotencyKey: string,
-): Promise<CreateInteractionResult> {
-  const channel = {
-    type: config.taskChannel,
-    initiated_by: 'customer',
-    properties: {
-      type: 'support-ticket',
-      subject: input.subject,
-    },
-  };
-
-  // Strip undefined attribute values; Twilio rejects them in the JSON.
-  const cleanAttributes: Record<string, string | number> = {};
-  for (const [k, v] of Object.entries(input.attributes)) {
-    if (v !== undefined && v !== null) cleanAttributes[k] = v;
-  }
-
-  const routing = {
-    properties: {
-      workspace_sid: config.workspaceSid,
-      workflow_sid: config.supportWorkflowSid,
-      queue_sid: config.supportQueueSid,
-      task_channel_unique_name: config.taskChannel,
-      attributes: cleanAttributes,
-    },
-  };
-
+): Promise<CreateTaskResult> {
   const formBody: Record<string, string> = {
-    Channel: JSON.stringify(channel),
-    Routing: JSON.stringify(routing),
+    WorkflowSid: input.workflowSid,
+    TaskChannel: input.taskChannel,
+    FriendlyName: input.friendlyName,
+    Priority: String(input.priority),
+    Timeout: String(input.timeout),
+    Attributes: JSON.stringify(input.attributes),
   };
 
-  const raw = await twilioFetch<RawInteraction>({
+  const url = `https://taskrouter.twilio.com/v1/Workspaces/${encodeURIComponent(
+    config.workspaceSid,
+  )}/Tasks`;
+
+  const raw = await twilioFetch<RawTask>({
     method: 'POST',
-    url: 'https://flex.twilio.com/v1/Interactions',
+    url,
     formBody,
     accountSid: config.accountSid,
     authToken: config.authToken,
     idempotencyKey,
   });
 
-  const interactionSid = raw.sid ?? '';
-  const conversationSid = raw.channel?.sid ?? '';
-  const taskSid = raw.routing?.properties?.task_sid;
-  if (!interactionSid || !conversationSid) {
+  const taskSid = raw.sid ?? raw.task_sid ?? '';
+  if (!taskSid) {
     throw new TwilioServerError(
-      `createInteraction: missing sid/channel in Twilio response (got: ${JSON.stringify(raw)})`,
+      `createTask: missing sid in Twilio response (got: ${JSON.stringify(raw)})`,
     );
   }
 
-  return { interactionSid, conversationSid, taskSid };
+  let parsedAttributes: Record<string, unknown> = {};
+  if (typeof raw.attributes === 'string') {
+    try {
+      parsedAttributes = JSON.parse(raw.attributes);
+    } catch {
+      // Twilio occasionally returns attributes as already-an-object (SDK behavior);
+      // fall through with empty parsed result if parse fails.
+    }
+  }
+
+  return { taskSid, attributes: parsedAttributes };
 }
 
 // ============================================================================
 // Conversations API — post a message to an existing Conversation
+//
+// Phase 3 NOTE: this function is unused after the Phase 3 pivot to TaskRouter
+// Tasks API. Kept defined (not deleted) for Phase 4 forward-compat when we
+// wire the customer email feedback loop, which may need to push customer
+// emails through Conversations into agent-side Flex UIs. Until Phase 4
+// activates this, no callers exist; tree-shaker may remove it.
 // ============================================================================
 
 export interface PostMessageInput {
@@ -311,7 +331,12 @@ export async function postConversationMessage(
 
 export interface TwilioClient {
   config: TwilioBridgeConfig;
-  createInteraction: (input: CreateInteractionInput, idempotencyKey: string) => Promise<CreateInteractionResult>;
+  createTask: (input: CreateTaskInput, idempotencyKey: string) => Promise<CreateTaskResult>;
+  /**
+   * Phase 4 forward-compat — not used in Phase 3 (no Conversations layer wired
+   * after the TaskRouter Tasks API pivot). Kept on the client surface so Phase 4
+   * can light it up without API churn.
+   */
   postConversationMessage: (input: PostMessageInput, idempotencyKey: string) => Promise<PostMessageResult>;
   verifySignature: (opts: Omit<Parameters<typeof verifyTwilioSignature>[0], 'authToken'>) => boolean;
 }
@@ -319,7 +344,7 @@ export interface TwilioClient {
 export function buildTwilioClient(config: TwilioBridgeConfig): TwilioClient {
   return {
     config,
-    createInteraction: (input, idempotencyKey) => createInteraction(input, config, idempotencyKey),
+    createTask: (input, idempotencyKey) => createTask(input, config, idempotencyKey),
     postConversationMessage: (input, idempotencyKey) => postConversationMessage(input, config, idempotencyKey),
     verifySignature: (opts) => verifyTwilioSignature({ ...opts, authToken: config.authToken }),
   };

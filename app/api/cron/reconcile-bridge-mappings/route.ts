@@ -1,8 +1,16 @@
 // app/api/cron/reconcile-bridge-mappings/route.ts
 // Phase 4 Vercel Cron Jobs reconcile job — sweeps stale 'pending' rows in
-// twilio_bridge_mappings every 15 minutes (per Phase 4 brief Deliverable #3
+// twilio_bridge_mappings DAILY at 05:00 UTC (per Phase 4 brief Deliverable #3
 // + PP-CTO refinement #1 belt-and-suspenders against persistence-side
 // failures).
+//
+// Schedule note (Phase 4 hotfix 2026-05-04): originally specified */15 * * * *
+// (every 15 min) per the brief. Vercel Hobby plan caps cron jobs at
+// once-per-day; the more-frequent schedule blocked Phase 4 auto-deploy
+// silently. Daily is fine for reconcile — failures are RARE edge cases (post-
+// Twilio-success-pre-DB-write hole), 24h staleness on cleanup is acceptable.
+// Phase 5+ may upgrade to Pro plan if reconcile freshness becomes a real
+// concern; until then daily covers it.
 //
 // What it does:
 //   - Finds rows where status='pending' AND created_at < NOW() - 1 hour

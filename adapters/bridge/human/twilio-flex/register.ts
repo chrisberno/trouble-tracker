@@ -3,17 +3,17 @@
 // Called once at module load by app/api/pp-webhook/route.ts.
 //
 // Design: small + explicit. No generic event bus; each pp-client event kind
-// maps to a single bridge handler. Per brief Task 2: "Keep dispatch logic small
-// and explicit; do NOT introduce a generic event bus."
+// maps to a single bridge handler.
+//
+// Phase 3 v2 (2026-05-04 pivot): TaskRouter Tasks API only. No Conversations
+// layer = no `ticket.replied.customer` subscription. Customer replies on PP
+// don't get pushed to Twilio in Phase 3 (agents see them via the iframe's
+// reply log fetched via pp-client). Phase 4 may re-add when wiring email loop.
 
 import { subscribe } from '@/pp-client';
 import type { TwilioBridgeConfig } from './types';
 import { buildTwilioClient } from './twilio-client';
-import {
-  onTicketCreated,
-  onTicketRepliedCustomer,
-  onTicketRepliedAgent,
-} from './handlers';
+import { onTicketCreated, onTicketRepliedAgent } from './handlers';
 
 let registered = false;
 
@@ -32,26 +32,22 @@ export function register(config: TwilioBridgeConfig): void {
     await onTicketCreated(event, twilio);
   });
 
-  subscribe(['ticket.replied.customer'], async (event) => {
-    if (event.kind !== 'ticket.replied.customer') return;
-    await onTicketRepliedCustomer(event, twilio);
-  });
-
   subscribe(['ticket.replied.agent'], async (event) => {
     if (event.kind !== 'ticket.replied.agent') return;
     await onTicketRepliedAgent(event, twilio);
   });
 
-  // ticket.status_changed / ticket.resolved / ticket.closed / ticket.deleted:
-  // Phase 3 takes no Twilio-side action on these. Phase 4 may add (e.g., close
-  // the Conversation when ticket hits closed status). Brief explicitly marks
-  // onTicketStatusChanged as optional Phase 3.
+  // Phase 3 events NOT subscribed:
+  //   - ticket.replied.customer (no Conversations layer; agent reads via iframe)
+  //   - ticket.status_changed / ticket.resolved / ticket.closed / ticket.deleted
+  //
+  // Phase 4 may add ticket.replied.customer for email loop integration.
 
   console.log(JSON.stringify({
     bridge: 'twilio-flex',
     info: 'registered handlers',
+    phase: '3-v2-taskrouter-pivot',
     deploymentId: config.deploymentId,
     workspaceSid: config.workspaceSid,
-    conversationsServiceSid: config.conversationsServiceSid,
   }));
 }

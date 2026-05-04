@@ -7,6 +7,18 @@ Lives at `adapters/bridge/human/twilio-flex/` per Manifesto v2.2 layout
 **Phase 3 of TroubleTracker Sprint 1.0** (ONR-77). Brief at
 `vault/projects/trouble-tracker-app/technical/dev-logs/traycer-brief-phase-3.md`.
 
+> **Phase 3 v2 pivot (2026-05-04):** Outbound originally specified Flex
+> Interactions API (`POST flex.twilio.com/v1/Interactions`); after live e2e
+> smoke (ticket 15) revealed that endpoint rejects our auth + body shape on
+> this account, pivoted to **TaskRouter Tasks API** directly
+> (`POST taskrouter.twilio.com/v1/Workspaces/{WS}/Tasks`). This matches
+> production patterns in both legacy `lib/taskrouter.ts` (TT) and Connie's
+> basecamp-v26.02 — known-working for ~1 year on the same workspace. The
+> trade-off: no Twilio Conversation per task in Phase 3, so agent reply
+> round-trip is iframe-driven (status flip + customer reply + internal note
+> buttons in `app/bridge/twilio-flex/ticket/[id]/`). Phase 4 may revisit
+> Conversations integration.
+
 ---
 
 ## What it does
@@ -30,7 +42,7 @@ export const BRIDGE_METADATA = {
 
 ---
 
-## Flows (4 inbound, 2 outbound — relative to PP.app)
+## Phase 3 flows (1 outbound, 1 inbound — iframe-driven agent UX)
 
 ### Outbound (PP → Twilio)
 
@@ -38,32 +50,12 @@ export const BRIDGE_METADATA = {
 PP ticket.created webhook
   → pp-client emits CoreEvent { kind: 'ticket.created' }
   → handlers.onTicketCreated
-  → twilio-client.createInteraction(workspace + workflow + queue + attributes)
-  → Twilio creates: Interaction + Conversation + Task in CCT WorkBench
-  → bridge-db.upsertBridgeMapping(ticketId → interactionSid + conversationSid + taskSid)
-```
-
-```
-PP ticket.replied.customer webhook (customer-side reply on the ticket)
-  → pp-client emits CoreEvent { kind: 'ticket.replied.customer' }
-  → handlers.onTicketRepliedCustomer
-  → bridge-db.getBridgeMappingByTicketId → conversationSid
-  → twilio-client.postConversationMessage(convoSid, body, author='customer')
-  → Agent sees the customer's message inline in their Flex Conversation
+  → twilio-client.createTask(workspace + workflow + attributes)
+  → Twilio creates: Task in CCT WorkBench (TaskRouter routes to Support queue)
+  → bridge-db.upsertBridgeMapping(ticketId → taskSid; interaction/conversation null)
 ```
 
 ### Inbound (Twilio → PP)
-
-```
-Agent message in Flex WorkBench
-  → Twilio Conversations Service-level onMessageAdded webhook fires
-  → /api/bridge/twilio-flex/conversations-webhook
-  → verifyTwilioSignature (X-Twilio-Signature HMAC-SHA1)
-  → skip if Author=customer (own outbound) or duplicate idempotency key
-  → bridge-db.getBridgeMappingByConversationSid → ticketId
-  → pp-client.addReply(ticketId, { body, source: 'flex' })
-  → PP fires ticket.replied.agent webhook → handlers.onTicketRepliedAgent observes (no Twilio re-write)
-```
 
 ```
 Agent completes Task in WorkBench
@@ -74,6 +66,48 @@ Agent completes Task in WorkBench
   → on EventType=task.completed: pp-client.closeTicket(ticketId)
   → PP fires ticket.status_changed webhook (Phase 3 takes no further action)
 ```
+
+### Iframe-driven agent UX (replaces native Conversation reply)
+
+When an agent accepts a Task in WorkBench, the enhanced_crm_container loads
+`task.attributes.profile_url` → `/bridge/twilio-flex/ticket/{id}` (server-side
+rendered via pp-client). The iframe has three action buttons:
+
+```
+┌──────────────────────────────────────────────────────┐
+│ Update status     → /api/bridge/twilio-flex/status-flip   │
+│   (open / in_progress / closed)                          │
+├──────────────────────────────────────────────────────┤
+│ Reply to customer → /api/bridge/twilio-flex/customer-reply │
+│   (POST → pp-client.addReply isInternal=false source=flex) │
+├──────────────────────────────────────────────────────┤
+│ Add internal note → /api/bridge/twilio-flex/internal-note  │
+│   (POST → pp-client.addReply isInternal=true source=flex)  │
+└──────────────────────────────────────────────────────┘
+```
+
+All three POST through bridge endpoints (server-side, server holds the PP token).
+Browser never sees PP credentials.
+
+## Phase 4 deferred (out of Phase 3 scope)
+
+Brief originally specified two additional flows (PP customer-side replies →
+Twilio Conversation messages, and Conversations webhook → pp-client.addReply
+for agent messages typed in WorkBench's native UI). After the TaskRouter Tasks
+API pivot, those flows depend on a Conversation per task that doesn't exist
+in Phase 3. Deferred to Phase 4 (which already owns the customer email loop +
+bidirectional reply with HTML stripping + loop prevention).
+
+Forward-compat hooks already in place:
+- `twilio-client.postConversationMessage()` defined but unused
+- `bridge-db.BridgeMapping` schema retains nullable `interactionSid` +
+  `conversationSid` columns
+- `getBridgeMappingByConversationSid()` defined but unused
+- `deployments/connie/config.json` retains `conversationsServiceSid`
+  (`IS8bd6c045...`)
+- Twilio Conversations Service post-webhook URL still configured (per ledger
+  row B2) — currently a 404 receiver (no Conversations exist on the new
+  TT-dedicated service); harmless until Phase 4 lights it up
 
 ---
 
@@ -120,12 +154,14 @@ The same discipline protects internal-note writes (also tagged `source: 'flex'`)
 
 ---
 
-## Twilio API surface used
+## Twilio API surface used (Phase 3)
 
-- **Interactions API** (`flex.twilio.com/v1/Interactions`) — POST creates Task + Conversation atomically
-- **Conversations API** (`conversations.twilio.com/v1/Services/<IS...>/Conversations/<CH...>/Messages`) — POST agent/customer messages
-- **TaskRouter Workspace event-callback** (configured via `taskrouter.twilio.com/v1/Workspaces/<WS...>` PUT) — fires on `task.completed` / `task.canceled`
-- **Conversations Service-level webhook** (configured via `conversations.twilio.com/v1/Services/<IS...>/Configuration/Webhooks` POST) — fires on `onMessageAdded`
+- **TaskRouter Tasks API** (`taskrouter.twilio.com/v1/Workspaces/<WS...>/Tasks`) — POST creates a Task on the Workspace; Workflow routes to Support queue (production pattern in legacy `lib/taskrouter.ts:75-85` + Connie's basecamp-v26.02 `taskrouter.private.js:194-213`)
+- **TaskRouter Workspace event-callback** (configured via `taskrouter.twilio.com/v1/Workspaces/<WS...>` PUT — ledger row B3) — fires on `task.completed` / `task.canceled`
+
+Phase 4 forward-compat (defined in `twilio-client.ts` but not called):
+- **Conversations API** (`conversations.twilio.com/v1/Services/<IS...>/Conversations/<CH...>/Messages`) — `postConversationMessage()` reserved for Phase 4 customer email loop
+- **Conversations Service-level webhook** (configured via Configuration/Webhooks endpoint — ledger row B2 already attached) — currently dormant (no Conversations exist on the new TT-dedicated service); Phase 4 will activate
 
 All Twilio writes carry an idempotency key tracked in `twilio_bridge_idempotency`
 (separate from pp-client's idempotency table to keep substrate boundaries clean).
@@ -206,20 +242,20 @@ adapters/bridge/human/twilio-flex/
 ├── README.md             ← this file
 ├── index.ts              ← public surface (re-exports register, types, BRIDGE_METADATA)
 ├── types.ts              ← TwilioBridgeConfig, BRIDGE_METADATA constants
-├── twilio-client.ts      ← REST wrapper for Interactions + Conversations APIs; signature verifier
-├── bridge-db.ts          ← twilio_bridge_mappings + twilio_bridge_idempotency tables (Postgres)
-├── handlers.ts           ← onTicketCreated, onTicketRepliedCustomer, onTicketRepliedAgent
+├── twilio-client.ts      ← REST wrapper: createTask (TaskRouter), signature verifier, postConversationMessage (Phase 4 reserve)
+├── bridge-db.ts          ← twilio_bridge_mappings (taskSid required; interaction/conversation nullable) + twilio_bridge_idempotency
+├── handlers.ts           ← onTicketCreated, onTicketRepliedAgent (observe-only)
 └── register.ts           ← wires handlers to pp-client.subscribe()
 
 app/api/bridge/twilio-flex/
-├── conversations-webhook/route.ts   ← Twilio Conversations onMessageAdded receiver
-├── task-webhook/route.ts            ← Twilio TaskRouter event-callback receiver (with discriminator gate)
-├── status-flip/route.ts             ← iframe action: pp-client.updateStatus
-└── internal-note/route.ts           ← iframe action: pp-client.addReply (isInternal, source='flex')
+├── task-webhook/route.ts          ← Twilio TaskRouter event-callback receiver (with discriminator gate — load-bearing)
+├── status-flip/route.ts           ← iframe action: pp-client.updateStatus
+├── customer-reply/route.ts        ← iframe action: pp-client.addReply (isInternal=false, source='flex')
+└── internal-note/route.ts         ← iframe action: pp-client.addReply (isInternal=true, source='flex')
 
 app/bridge/twilio-flex/ticket/[id]/
 ├── page.tsx              ← server-rendered ticket-context iframe
-└── TicketActions.tsx     ← client-side action footer (status flip + internal note)
+└── TicketActions.tsx     ← client-side action footer (status flip + customer reply + internal note)
 
 deployments/connie/
 ├── config.json           ← twilio block + customer scopes + customFieldIds + statusMap

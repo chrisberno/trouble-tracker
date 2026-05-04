@@ -1,7 +1,18 @@
 // app/bridge/twilio-flex/ticket/[id]/TicketActions.tsx
 // Client-side action footer for the iframe page.
-// Two write actions: status flip + add internal note.
-// Both POST to thin Next.js API routes (server-side calls pp-client).
+//
+// Phase 3 v2 (2026-05-04): three write actions — status flip + customer reply
+// + internal note. Customer reply is the new addition (replaces the
+// "agent replies via Twilio Conversation in WorkBench" pathway from the
+// original brief; that pathway depended on the Flex Interactions API which
+// we pivoted away from).
+//
+// Color coding for clarity at a glance:
+//   - Update status     → blue   (action button)
+//   - Reply to customer → blue   (customer-facing; visible to customer)
+//   - Add internal note → green  (internal-only; agent eyes only)
+//
+// All three POST to thin Next.js API routes; server-side calls pp-client.
 // Browser never holds the PP.app token.
 
 'use client';
@@ -24,6 +35,11 @@ export function TicketActions({ ticketId, currentStatus }: Props) {
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [statusBusy, setStatusBusy] = useState(false);
   const [statusErr, setStatusErr] = useState<string | null>(null);
+
+  const [replyBody, setReplyBody] = useState('');
+  const [replyMsg, setReplyMsg] = useState<string | null>(null);
+  const [replyBusy, setReplyBusy] = useState(false);
+  const [replyErr, setReplyErr] = useState<string | null>(null);
 
   const [noteBody, setNoteBody] = useState('');
   const [noteMsg, setNoteMsg] = useState<string | null>(null);
@@ -50,6 +66,31 @@ export function TicketActions({ ticketId, currentStatus }: Props) {
       setStatusErr(err instanceof Error ? err.message : 'Network error');
     } finally {
       setStatusBusy(false);
+    }
+  }
+
+  async function handleCustomerReply(): Promise<void> {
+    if (!replyBody.trim()) return;
+    setReplyBusy(true);
+    setReplyMsg(null);
+    setReplyErr(null);
+    try {
+      const res = await fetch('/api/bridge/twilio-flex/customer-reply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticketId, body: replyBody }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setReplyErr(data.error ?? `Failed (${res.status})`);
+      } else {
+        setReplyMsg(`Reply sent (id ${data.replyId})`);
+        setReplyBody('');
+      }
+    } catch (err) {
+      setReplyErr(err instanceof Error ? err.message : 'Network error');
+    } finally {
+      setReplyBusy(false);
     }
   }
 
@@ -109,6 +150,30 @@ export function TicketActions({ ticketId, currentStatus }: Props) {
       </div>
 
       <div>
+        <label className="block text-xs text-gray-600 mb-1">Reply to customer</label>
+        <textarea
+          value={replyBody}
+          onChange={(e) => setReplyBody(e.target.value)}
+          placeholder="Customer-visible reply (will appear on the ticket)"
+          rows={3}
+          disabled={replyBusy}
+          className="w-full border border-gray-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
+        />
+        <div className="flex items-center gap-2 mt-1">
+          <button
+            type="button"
+            onClick={handleCustomerReply}
+            disabled={replyBusy || !replyBody.trim()}
+            className="bg-blue-600 text-white px-3 py-1 text-sm rounded hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+          >
+            {replyBusy ? 'Sending…' : 'Send reply'}
+          </button>
+          {replyMsg && <span className="text-xs text-green-700">{replyMsg}</span>}
+          {replyErr && <span className="text-xs text-red-600">{replyErr}</span>}
+        </div>
+      </div>
+
+      <div>
         <label className="block text-xs text-gray-600 mb-1">Add internal note</label>
         <textarea
           value={noteBody}
@@ -116,7 +181,7 @@ export function TicketActions({ ticketId, currentStatus }: Props) {
           placeholder="Internal note (visible only to agents)"
           rows={3}
           disabled={noteBusy}
-          className="w-full border border-gray-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
+          className="w-full border border-gray-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-green-500 focus:border-green-500 disabled:bg-gray-100"
         />
         <div className="flex items-center gap-2 mt-1">
           <button

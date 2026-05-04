@@ -10,14 +10,27 @@
 import { sql } from '@vercel/postgres';
 
 // ============================================================================
-// Mapping table — ticket ↔ twilio interaction/conversation
+// Mapping table — ticket → Twilio task (+ optional interaction/conversation)
+//
+// Phase 3 v2 (after TaskRouter Tasks API pivot): only `taskSid` is required.
+// `interactionSid` and `conversationSid` are nullable — Phase 3 does not create
+// either (no Flex Interactions API call, no per-task Conversation). They stay
+// in the schema for Phase 4 forward-compat (when we wire the customer email
+// loop and may create Conversations again).
+//
+// CREATE TABLE IF NOT EXISTS is idempotent. The original schema had
+// `interaction_sid TEXT NOT NULL`; we use ALTER TABLE in initBridgeMappingTable
+// to relax that constraint at runtime so Phase 3 deploys cleanly even if the
+// table was created by an earlier (now-deleted) Phase 3 v1 attempt. New
+// installs (no prior table) will get the relaxed schema directly via the
+// CREATE TABLE statement.
 // ============================================================================
 
 export interface BridgeMapping {
   ticketId: string;
-  interactionSid: string;
-  conversationSid: string;
-  taskSid: string | null;
+  interactionSid: string | null;       // Phase 4 forward-compat; null in Phase 3
+  conversationSid: string | null;      // Phase 4 forward-compat; null in Phase 3
+  taskSid: string;                     // Phase 3 required
   createdAt: string;
 }
 
@@ -25,15 +38,25 @@ export async function initBridgeMappingTable(): Promise<void> {
   await sql`
     CREATE TABLE IF NOT EXISTS twilio_bridge_mappings (
       ticket_id TEXT PRIMARY KEY,
-      interaction_sid TEXT NOT NULL,
-      conversation_sid TEXT NOT NULL,
-      task_sid TEXT,
+      interaction_sid TEXT,
+      conversation_sid TEXT,
+      task_sid TEXT NOT NULL,
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `;
+  // Phase 3 v2 schema migration: if a prior install created the table with
+  // NOT NULL constraints on interaction_sid/conversation_sid, drop those.
+  // ALTER TABLE ... DROP NOT NULL is idempotent in Postgres (no error if the
+  // column is already nullable).
+  await sql`ALTER TABLE twilio_bridge_mappings ALTER COLUMN interaction_sid DROP NOT NULL`;
+  await sql`ALTER TABLE twilio_bridge_mappings ALTER COLUMN conversation_sid DROP NOT NULL`;
   await sql`
     CREATE INDEX IF NOT EXISTS twilio_bridge_mappings_conversation_sid_idx
     ON twilio_bridge_mappings(conversation_sid)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS twilio_bridge_mappings_task_sid_idx
+    ON twilio_bridge_mappings(task_sid)
   `;
 }
 
@@ -45,9 +68,9 @@ export async function upsertBridgeMapping(
     INSERT INTO twilio_bridge_mappings (ticket_id, interaction_sid, conversation_sid, task_sid)
     VALUES (${mapping.ticketId}, ${mapping.interactionSid}, ${mapping.conversationSid}, ${mapping.taskSid})
     ON CONFLICT (ticket_id) DO UPDATE SET
-      interaction_sid = EXCLUDED.interaction_sid,
-      conversation_sid = EXCLUDED.conversation_sid,
-      task_sid = COALESCE(EXCLUDED.task_sid, twilio_bridge_mappings.task_sid)
+      interaction_sid = COALESCE(EXCLUDED.interaction_sid, twilio_bridge_mappings.interaction_sid),
+      conversation_sid = COALESCE(EXCLUDED.conversation_sid, twilio_bridge_mappings.conversation_sid),
+      task_sid = EXCLUDED.task_sid
   `;
 }
 
@@ -65,13 +88,18 @@ export async function getBridgeMappingByTicketId(
   if (!row) return null;
   return {
     ticketId: row.ticket_id as string,
-    interactionSid: row.interaction_sid as string,
-    conversationSid: row.conversation_sid as string,
-    taskSid: (row.task_sid as string | null) ?? null,
+    interactionSid: (row.interaction_sid as string | null) ?? null,
+    conversationSid: (row.conversation_sid as string | null) ?? null,
+    taskSid: row.task_sid as string,
     createdAt: (row.created_at as Date | string).toString(),
   };
 }
 
+/**
+ * Phase 4 forward-compat — not used in Phase 3 (the conversations-webhook
+ * route was removed; no customer-side messages flow into a Twilio Conversation
+ * for Phase 3). Kept defined so Phase 4 can re-enable without API churn.
+ */
 export async function getBridgeMappingByConversationSid(
   conversationSid: string,
 ): Promise<BridgeMapping | null> {
@@ -86,9 +114,9 @@ export async function getBridgeMappingByConversationSid(
   if (!row) return null;
   return {
     ticketId: row.ticket_id as string,
-    interactionSid: row.interaction_sid as string,
-    conversationSid: row.conversation_sid as string,
-    taskSid: (row.task_sid as string | null) ?? null,
+    interactionSid: (row.interaction_sid as string | null) ?? null,
+    conversationSid: (row.conversation_sid as string | null) ?? null,
+    taskSid: row.task_sid as string,
     createdAt: (row.created_at as Date | string).toString(),
   };
 }

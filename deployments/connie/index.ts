@@ -1,4 +1,5 @@
 import type { DeploymentConfig } from '@/pp-client/types';
+import type { TwilioBridgeConfig } from '@/adapters/bridge/human/twilio-flex/types';
 import config from './config.json';
 
 export function buildConnieConfig(): DeploymentConfig {
@@ -22,4 +23,20 @@ export function buildConnieConfig(): DeploymentConfig {
   };
 }
 
+export function buildConnieTwilioConfig(): TwilioBridgeConfig {
+  return {
+    accountSid: process.env[config.twilio.accountSidEnvVar] ?? '',
+    authToken: process.env[config.twilio.authTokenEnvVar] ?? '',
+    workspaceSid: config.twilio.workspaceSid,
+    supportWorkflowSid: config.twilio.supportWorkflowSid,
+    supportQueueSid: config.twilio.supportQueueSid,
+    conversationsServiceSid: config.twilio.conversationsServiceSid,
+    taskAttributeType: config.twilio.taskAttributeType,
+    taskChannel: config.twilio.taskChannel,
+    iframeBaseUrl: config.twilio.iframeBaseUrl,
+    deploymentId: config.id,
+  };
+}
+
 export const connieConfig = buildConnieConfig();
+export const connieTwilioConfig = buildConnieTwilioConfig();

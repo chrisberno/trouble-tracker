@@ -130,10 +130,6 @@ export async function onTicketCreated(
           customerScope: ticket.customerScope,
           customerEmail: ticket.customer.email ?? '',
         },
-        // Phase 4.1: required for Flex email-channel binding to succeed when
-        // an agent accepts the linked Task. Pattern from canonical CCT email
-        // Conversations (extracted 2026-05-04 during Andrea testing session).
-        messagingServiceSid: twilio.config.messagingServiceSid,
       },
       `twilio:conversation:${ticket.id}`,
     );
@@ -149,59 +145,6 @@ export async function onTicketCreated(
     }));
     await updateMappingSid(ticket.id, { status: 'failed-conversation-create' });
     throw err;
-  }
-
-  // ========================================================================
-  // STEP 2.5 (Phase 4.1) — Add customer email participant to the Conversation.
-  // REQUIRED for Flex worker→Conversation binding to succeed when an agent
-  // accepts the linked Task. Without this step, agent gets stuck on a loading
-  // spinner. Canonical pattern from CCT's existing email Conversations.
-  //
-  // Defensive: only attempt if customer email is present (Phase 2 form
-  // requires it; falls back to skip-and-warn if somehow null).
-  // ========================================================================
-  if (ticket.customer.email) {
-    try {
-      await twilio.addEmailParticipant({
-        conversationSid,
-        address: ticket.customer.email,
-        name: ticket.customer.name || undefined,
-      });
-      console.log(JSON.stringify({
-        bridge: 'twilio-flex',
-        handler: 'onTicketCreated',
-        step: 'addEmailParticipant',
-        ok: true,
-        ticketId: ticket.id,
-        conversationSid,
-        customerEmail: ticket.customer.email,
-      }));
-    } catch (err) {
-      // Participant add failure is recoverable in theory (agent could still
-      // see the Conversation if they bind manually), but in practice Flex
-      // fails silently if no participant exists. Mark the mapping for
-      // reconcile + tear down the Conversation + bubble the error.
-      console.error(JSON.stringify({
-        bridge: 'twilio-flex',
-        handler: 'onTicketCreated',
-        step: 'addEmailParticipant',
-        error: err instanceof Error ? err.message : String(err),
-        ticketId: ticket.id,
-        conversationSid,
-      }));
-      await twilio.deleteConversation(conversationSid);
-      await updateMappingSid(ticket.id, { status: 'failed-conversation-create' });
-      throw err;
-    }
-  } else {
-    console.warn(JSON.stringify({
-      bridge: 'twilio-flex',
-      handler: 'onTicketCreated',
-      step: 'addEmailParticipant',
-      warning: 'customer email missing; skipping participant add — Flex worker binding will likely fail',
-      ticketId: ticket.id,
-      conversationSid,
-    }));
   }
 
   // ========================================================================

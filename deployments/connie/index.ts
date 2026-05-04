@@ -31,7 +31,6 @@ export function buildConnieTwilioConfig(): TwilioBridgeConfig {
     supportWorkflowSid: config.twilio.supportWorkflowSid,
     supportQueueSid: config.twilio.supportQueueSid,
     conversationsServiceSid: config.twilio.conversationsServiceSid,
-    messagingServiceSid: config.twilio.messagingServiceSid,
     taskAttributeType: config.twilio.taskAttributeType,
     taskChannel: config.twilio.taskChannel,
     iframeBaseUrl: config.twilio.iframeBaseUrl,

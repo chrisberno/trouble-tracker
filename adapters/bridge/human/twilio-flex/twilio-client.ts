@@ -544,6 +544,69 @@ export async function createInteraction(
 }
 
 // ============================================================================
+// Conversation Webhooks API — register per-conversation webhook
+//
+// Phase 5 (TTB-1): subscribe to onMessageAdded events on each TT-managed
+// Conversation so agent canvas replies forward to PP.app addReply. The webhook
+// URL includes ticketId as a query param so the receiver doesn't need a
+// conversation lookup.
+// ============================================================================
+
+export interface AddConversationWebhookInput {
+  conversationSid: string;
+  url: string;                         // full URL (may include query string)
+  filters: string[];                   // e.g. ['onMessageAdded']
+  method?: 'POST' | 'GET';
+}
+
+interface RawConversationWebhook {
+  sid?: string;
+  conversation_sid?: string;
+  target?: string;
+}
+
+export interface AddConversationWebhookResult {
+  webhookSid: string;
+}
+
+export async function addConversationWebhook(
+  input: AddConversationWebhookInput,
+  config: TwilioBridgeConfig,
+  idempotencyKey: string,
+): Promise<AddConversationWebhookResult> {
+  const url = `https://conversations.twilio.com/v1/Services/${encodeURIComponent(
+    config.conversationsServiceSid,
+  )}/Conversations/${encodeURIComponent(input.conversationSid)}/Webhooks`;
+
+  // For multi-value Configuration.Filters, Twilio expects repeated form params.
+  // Single-filter case (Phase 5 MVP) uses a single value.
+  const formBody: Record<string, string> = {
+    Target: 'webhook',
+    'Configuration.Url': input.url,
+    'Configuration.Method': input.method ?? 'POST',
+    'Configuration.Filters': input.filters.join(','),
+  };
+
+  const raw = await twilioFetch<RawConversationWebhook>({
+    method: 'POST',
+    url,
+    formBody,
+    accountSid: config.accountSid,
+    authToken: config.authToken,
+    idempotencyKey,
+  });
+
+  const webhookSid = raw.sid ?? '';
+  if (!webhookSid) {
+    throw new TwilioServerError(
+      `addConversationWebhook: missing sid in Twilio response (got: ${JSON.stringify(raw)})`,
+    );
+  }
+
+  return { webhookSid };
+}
+
+// ============================================================================
 // Builder — collects all the surface a handler needs in one object
 // ============================================================================
 
@@ -555,6 +618,8 @@ export interface TwilioClient {
   createConversation: (input: CreateConversationInput, idempotencyKey: string) => Promise<CreateConversationResult>;
   addConversationParticipant: (input: AddParticipantInput, idempotencyKey: string) => Promise<AddParticipantResult>;
   createInteraction: (input: CreateInteractionInput, idempotencyKey: string) => Promise<CreateInteractionResult>;
+  // Phase 5 (TTB-1) — agent canvas reply forwarder
+  addConversationWebhook: (input: AddConversationWebhookInput, idempotencyKey: string) => Promise<AddConversationWebhookResult>;
   verifySignature: (opts: Omit<Parameters<typeof verifyTwilioSignature>[0], 'authToken'>) => boolean;
 }
 
@@ -566,6 +631,7 @@ export function buildTwilioClient(config: TwilioBridgeConfig): TwilioClient {
     createConversation: (input, idempotencyKey) => createConversation(input, config, idempotencyKey),
     addConversationParticipant: (input, idempotencyKey) => addConversationParticipant(input, config, idempotencyKey),
     createInteraction: (input, idempotencyKey) => createInteraction(input, config, idempotencyKey),
+    addConversationWebhook: (input, idempotencyKey) => addConversationWebhook(input, config, idempotencyKey),
     verifySignature: (opts) => verifyTwilioSignature({ ...opts, authToken: config.authToken }),
   };
 }

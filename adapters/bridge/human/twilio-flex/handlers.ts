@@ -165,7 +165,29 @@ export async function onTicketCreated(
       `twilio:firstmsg:${ticket.id}`,
     );
 
-    // Step 4: Create the Flex Interaction. This auto-creates the bound
+    // Step 4 (Phase 5, TTB-1): Register a per-conversation webhook for
+    // onMessageAdded. When the Connie agent types a reply in the canvas, the
+    // message is added to this Conversation; Twilio fires this webhook; our
+    // endpoint forwards the reply to PP.app via pp-client.addReply (with
+    // source='flex' for loop prevention). Customer-authored messages (Author
+    // matches the proxy identity prefix) are filtered out at the endpoint.
+    //
+    // ticketId in the URL query param avoids a Conversation fetch on each
+    // webhook fire — endpoint reads it directly from the URL.
+    const iframeBase = new URL(twilio.config.iframeBaseUrl);
+    const conversationMessageWebhookUrl =
+      `${iframeBase.origin}/api/bridge/twilio-flex/conversation-message?ticketId=${encodeURIComponent(ticket.id)}`;
+    await twilio.addConversationWebhook(
+      {
+        conversationSid: conv.conversationSid,
+        url: conversationMessageWebhookUrl,
+        filters: ['onMessageAdded'],
+        method: 'POST',
+      },
+      `twilio:convwebhook:${ticket.id}`,
+    );
+
+    // Step 5: Create the Flex Interaction. This auto-creates the bound
     // TaskRouter task (with conversationsSid populated) and lands it in the
     // CCT support queue. Priority comes from the workflow + queue config;
     // we pass priority via task attribute for plugin display.

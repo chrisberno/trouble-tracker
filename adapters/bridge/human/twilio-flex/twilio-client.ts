@@ -326,18 +326,235 @@ export async function postConversationMessage(
 }
 
 // ============================================================================
+// Conversations API — create conversation, add participant, add first message
+//
+// Phase 3 v3 (TTB-1, 2026-05-05): Pattern B chain. handlers.ts uses these to
+// build the conversation context BEFORE the Interaction is created, so that
+// the bound task lands in the Connie canvas with the message thread + composer
+// rendered natively.
+//
+// CRITICAL: conversationsServiceSid in deployment config MUST be the Flex
+// default chat service SID (CCT: IS91e4bcb2939d4672a007ef27d323ad41). Flex
+// workers can only be added as participants to conversations in their service.
+// Wrong service = HTTP 400 on agent accept. This was the root cause of the
+// Phase 3 v2 pivot to Pattern A (raw POST /Tasks).
+// ============================================================================
+
+export interface CreateConversationInput {
+  friendlyName: string;
+  attributes: Record<string, unknown>;
+}
+
+interface RawConversation {
+  sid?: string;
+  chat_service_sid?: string;
+  friendly_name?: string;
+  state?: string;
+  attributes?: string;
+}
+
+export interface CreateConversationResult {
+  conversationSid: string;
+  chatServiceSid: string;
+}
+
+export async function createConversation(
+  input: CreateConversationInput,
+  config: TwilioBridgeConfig,
+  idempotencyKey: string,
+): Promise<CreateConversationResult> {
+  const url = `https://conversations.twilio.com/v1/Services/${encodeURIComponent(
+    config.conversationsServiceSid,
+  )}/Conversations`;
+
+  const formBody: Record<string, string> = {
+    FriendlyName: input.friendlyName,
+    Attributes: JSON.stringify(input.attributes),
+  };
+
+  const raw = await twilioFetch<RawConversation>({
+    method: 'POST',
+    url,
+    formBody,
+    accountSid: config.accountSid,
+    authToken: config.authToken,
+    idempotencyKey,
+  });
+
+  const conversationSid = raw.sid ?? '';
+  if (!conversationSid) {
+    throw new TwilioServerError(
+      `createConversation: missing sid in Twilio response (got: ${JSON.stringify(raw)})`,
+    );
+  }
+
+  return {
+    conversationSid,
+    chatServiceSid: raw.chat_service_sid ?? config.conversationsServiceSid,
+  };
+}
+
+export interface AddParticipantInput {
+  conversationSid: string;
+  identity: string;                    // proxy identity for the customer
+  attributes: Record<string, unknown>;
+}
+
+interface RawParticipant {
+  sid?: string;
+  identity?: string;
+}
+
+export interface AddParticipantResult {
+  participantSid: string;
+  identity: string;
+}
+
+export async function addConversationParticipant(
+  input: AddParticipantInput,
+  config: TwilioBridgeConfig,
+  idempotencyKey: string,
+): Promise<AddParticipantResult> {
+  const url = `https://conversations.twilio.com/v1/Services/${encodeURIComponent(
+    config.conversationsServiceSid,
+  )}/Conversations/${encodeURIComponent(input.conversationSid)}/Participants`;
+
+  const formBody: Record<string, string> = {
+    Identity: input.identity,
+    Attributes: JSON.stringify(input.attributes),
+  };
+
+  const raw = await twilioFetch<RawParticipant>({
+    method: 'POST',
+    url,
+    formBody,
+    accountSid: config.accountSid,
+    authToken: config.authToken,
+    idempotencyKey,
+  });
+
+  const participantSid = raw.sid ?? '';
+  if (!participantSid) {
+    throw new TwilioServerError(
+      `addConversationParticipant: missing sid in Twilio response (got: ${JSON.stringify(raw)})`,
+    );
+  }
+
+  return { participantSid, identity: raw.identity ?? input.identity };
+}
+
+// ============================================================================
+// Flex Interactions API — create Interaction with conversation bound
+//
+// This is the canonical Twilio path that produces a properly-bound Flex task:
+//   - Channel.properties.media_channel_sid links to the existing Conversation
+//   - Routing creates the TaskRouter task with attributes + queue
+//   - Returned task has flexInteractionSid + flexInteractionChannelSid +
+//     conversations.media wired so the agent canvas renders natively
+// ============================================================================
+
+export interface CreateInteractionInput {
+  conversationSid: string;
+  initiatedBy: 'customer' | 'agent';
+  channelType: 'chat' | 'sms' | 'email' | 'whatsapp' | 'web';
+  workflowSid: string;
+  taskChannelUniqueName: string;
+  taskAttributes: Record<string, unknown>;
+}
+
+interface RawInteractionRoutingProps {
+  sid?: string;
+  attributes?: string;
+  task_channel_unique_name?: string;
+  workflow_sid?: string;
+  workspace_sid?: string;
+  assignment_status?: string;
+}
+
+interface RawInteractionChannel {
+  sid?: string;
+  type?: string;
+}
+
+interface RawInteraction {
+  sid?: string;
+  channel?: RawInteractionChannel;
+  routing?: { properties?: RawInteractionRoutingProps };
+}
+
+export interface CreateInteractionResult {
+  interactionSid: string;
+  channelSid: string;                  // UO... — interaction-level channel
+  taskSid: string;
+  conversationSid: string;             // pass-through for caller convenience
+}
+
+export async function createInteraction(
+  input: CreateInteractionInput,
+  config: TwilioBridgeConfig,
+  idempotencyKey: string,
+): Promise<CreateInteractionResult> {
+  const url = 'https://flex-api.twilio.com/v1/Interactions';
+
+  const channel = {
+    type: input.channelType,
+    initiated_by: input.initiatedBy,
+    properties: { media_channel_sid: input.conversationSid },
+  };
+
+  const routing = {
+    properties: {
+      workspace_sid: config.workspaceSid,
+      workflow_sid: input.workflowSid,
+      task_channel_unique_name: input.taskChannelUniqueName,
+      attributes: input.taskAttributes,
+    },
+  };
+
+  const formBody: Record<string, string> = {
+    Channel: JSON.stringify(channel),
+    Routing: JSON.stringify(routing),
+  };
+
+  const raw = await twilioFetch<RawInteraction>({
+    method: 'POST',
+    url,
+    formBody,
+    accountSid: config.accountSid,
+    authToken: config.authToken,
+    idempotencyKey,
+  });
+
+  const interactionSid = raw.sid ?? '';
+  const channelSid = raw.channel?.sid ?? '';
+  const taskSid = raw.routing?.properties?.sid ?? '';
+
+  if (!interactionSid || !taskSid) {
+    throw new TwilioServerError(
+      `createInteraction: missing required SIDs in Twilio response (got: ${JSON.stringify(raw)})`,
+    );
+  }
+
+  return {
+    interactionSid,
+    channelSid,
+    taskSid,
+    conversationSid: input.conversationSid,
+  };
+}
+
+// ============================================================================
 // Builder — collects all the surface a handler needs in one object
 // ============================================================================
 
 export interface TwilioClient {
   config: TwilioBridgeConfig;
   createTask: (input: CreateTaskInput, idempotencyKey: string) => Promise<CreateTaskResult>;
-  /**
-   * Phase 4 forward-compat — not used in Phase 3 (no Conversations layer wired
-   * after the TaskRouter Tasks API pivot). Kept on the client surface so Phase 4
-   * can light it up without API churn.
-   */
   postConversationMessage: (input: PostMessageInput, idempotencyKey: string) => Promise<PostMessageResult>;
+  // Phase 3 v3 (TTB-1) — Pattern B chain
+  createConversation: (input: CreateConversationInput, idempotencyKey: string) => Promise<CreateConversationResult>;
+  addConversationParticipant: (input: AddParticipantInput, idempotencyKey: string) => Promise<AddParticipantResult>;
+  createInteraction: (input: CreateInteractionInput, idempotencyKey: string) => Promise<CreateInteractionResult>;
   verifySignature: (opts: Omit<Parameters<typeof verifyTwilioSignature>[0], 'authToken'>) => boolean;
 }
 
@@ -346,6 +563,9 @@ export function buildTwilioClient(config: TwilioBridgeConfig): TwilioClient {
     config,
     createTask: (input, idempotencyKey) => createTask(input, config, idempotencyKey),
     postConversationMessage: (input, idempotencyKey) => postConversationMessage(input, config, idempotencyKey),
+    createConversation: (input, idempotencyKey) => createConversation(input, config, idempotencyKey),
+    addConversationParticipant: (input, idempotencyKey) => addConversationParticipant(input, config, idempotencyKey),
+    createInteraction: (input, idempotencyKey) => createInteraction(input, config, idempotencyKey),
     verifySignature: (opts) => verifyTwilioSignature({ ...opts, authToken: config.authToken }),
   };
 }

@@ -23,9 +23,9 @@
     "workspaceSid": "WSfe43abb4378f0f1e2ebb98877c03bd1d",
     "supportWorkflowSid": "WW2c597b1d5a96635b6cb0b6d261c9ede8",
     "supportQueueSid": "WQ9d76ef58cf2f171d511c36e0e0b05851",
-    "conversationsServiceSid": "IS8bd6c045af0643e4ab201d44b1aa22ad",
+    "conversationsServiceSid": "IS91e4bcb2939d4672a007ef27d323ad41",
     "taskAttributeType": "support_ticket",
-    "taskChannel": "email",
+    "taskChannel": "chat",
     "iframeBaseUrl": "https://trouble-ticket-app.vercel.app/bridge/twilio-flex/ticket"
   },
   "customerScopes": [

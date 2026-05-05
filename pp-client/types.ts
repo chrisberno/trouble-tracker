@@ -40,6 +40,16 @@ export interface Reply {
   createdAt: string;
 }
 
+// Attachment input for addReply. Adapters pre-fetch the binary (e.g. from
+// Twilio MCS) and pass it in as a Buffer along with filename + content type.
+// pp-client converts to multipart on the wire — Perfex's reply endpoint
+// accepts `attachments[]` array notation in multipart/form-data.
+export interface ReplyAttachment {
+  filename: string;
+  contentType: string;
+  data: Buffer;
+}
+
 // Deployment config — adapters pass this in; pp-client uses what it's given
 export interface DeploymentConfig {
   tenantUrl: string;           // e.g. https://troubletracker.peopleperson.app

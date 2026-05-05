@@ -6,6 +6,7 @@
 import type {
   Ticket,
   Reply,
+  ReplyAttachment,
   TicketStatus,
   TicketPriority,
   DeploymentConfig,
@@ -37,21 +38,32 @@ async function ppFetch<T>(opts: PpFetchOptions): Promise<T> {
   const maxAttempts = 3;
   let lastError: unknown;
 
+  // FormData (multipart) detection — used for attachment uploads. When the
+  // body is FormData, fetch() sets the multipart boundary itself, so we
+  // MUST NOT pre-set Content-Type or JSON.stringify the body.
+  const isMultipart = typeof FormData !== 'undefined' && opts.body instanceof FormData;
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const start = Date.now();
     let statusCode = 0;
     try {
       const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
         Accept: 'application/json',
         authtoken: opts.config.tenantApiToken,
         ...(opts.extraHeaders ?? {}),
       };
+      if (!isMultipart) {
+        headers['Content-Type'] = 'application/json';
+      }
 
       const res = await fetch(url, {
         method: opts.method,
         headers,
-        body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+        body: isMultipart
+          ? (opts.body as FormData)
+          : opts.body !== undefined
+            ? JSON.stringify(opts.body)
+            : undefined,
       });
       statusCode = res.status;
       const durationMs = Date.now() - start;
@@ -513,22 +525,51 @@ interface PpReplyResponse {
 
 export async function addReply(
   ticketId: string,
-  reply: { body: string; source?: string; isInternal?: boolean },
+  reply: {
+    body: string;
+    source?: string;
+    isInternal?: boolean;
+    attachments?: ReplyAttachment[];
+  },
   config: DeploymentConfig,
 ): Promise<Reply> {
   const extraHeaders: Record<string, string> = {};
   if (reply.source) extraHeaders['X-PP-Source'] = reply.source;
 
+  const hasAttachments = !!reply.attachments && reply.attachments.length > 0;
+
   // PP.app's reply endpoint expects the body field to be `message`
   // (not `description` — the brief had it wrong; verified live 2026-05-03).
-  const res = await ppFetch<PpReplyResponse>({
-    method: 'POST',
-    path: `/api/tickets/reply/${encodeURIComponent(ticketId)}`,
-    body: {
+  // Perfex's reply endpoint accepts attachments via multipart/form-data with
+  // `attachments[]` array notation. When attachments are present we switch
+  // the body shape from JSON to FormData; ppFetch detects FormData and skips
+  // JSON encoding + lets fetch set the multipart boundary itself.
+  let body: unknown;
+  if (hasAttachments) {
+    const form = new FormData();
+    form.append('message', reply.body);
+    form.append('description', reply.body);
+    form.append('isinternal', reply.isInternal ? '1' : '0');
+    for (const att of reply.attachments!) {
+      // Node 20's FormData accepts Blob with filename. Buffer is wrapped as a
+      // Blob via a Uint8Array view; explicit content type preserves PP-side
+      // mime detection.
+      const blob = new Blob([new Uint8Array(att.data)], { type: att.contentType });
+      form.append('attachments[]', blob, att.filename);
+    }
+    body = form;
+  } else {
+    body = {
       message: reply.body,
       description: reply.body,
       isinternal: reply.isInternal ? 1 : 0,
-    },
+    };
+  }
+
+  const res = await ppFetch<PpReplyResponse>({
+    method: 'POST',
+    path: `/api/tickets/reply/${encodeURIComponent(ticketId)}`,
+    body,
     config,
     extraHeaders,
     ticketId,

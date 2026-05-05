@@ -1,12 +1,20 @@
 // app/api/bridge/twilio-flex/internal-note/route.ts
-// Iframe action endpoint: agent adds an internal note to the ticket.
-// POSTed by the iframe page client-side; server-side calls pp-client.addReply
-// with isInternal=true and source='flex' (loop prevention via source-tag).
+// Agent adds an internal note to the ticket.
+//
+// Two clients call this route:
+//   1. The legacy iframe page (same-origin) — Pattern A surface, still active
+//      as parallel runtime through Task 9.
+//   2. The basecamp Connie Flex plugin (cross-origin from
+//      https://careteam.connie.team) — Pattern B surface (Task 7 / TTB-1).
+//
+// Server-side calls pp-client.addReply with isInternal=true and source='flex'
+// (loop prevention via source-tag).
 
 import { NextRequest, NextResponse } from 'next/server';
 import { addReply } from '@/pp-client';
 import { connieConfig } from '@/deployments/connie';
 import { BRIDGE_METADATA } from '@/adapters/bridge/human/twilio-flex';
+import { corsPreflight, withCors } from '@/adapters/bridge/human/twilio-flex/cors';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -14,6 +22,10 @@ export const dynamic = 'force-dynamic';
 interface InternalNoteBody {
   ticketId?: unknown;
   body?: unknown;
+}
+
+export async function OPTIONS(request: NextRequest): Promise<NextResponse> {
+  return corsPreflight(request);
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
@@ -24,10 +36,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const noteBody = typeof payload.body === 'string' ? payload.body.trim() : '';
 
     if (!ticketId) {
-      return NextResponse.json({ error: 'ticketId required' }, { status: 400 });
+      return withCors(request, NextResponse.json({ error: 'ticketId required' }, { status: 400 }));
     }
     if (!noteBody) {
-      return NextResponse.json({ error: 'body required' }, { status: 400 });
+      return withCors(request, NextResponse.json({ error: 'body required' }, { status: 400 }));
     }
 
     const reply = await addReply(
@@ -44,16 +56,19 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       replyId: reply.id,
     }));
 
-    return NextResponse.json({ ok: true, ticketId, replyId: reply.id }, { status: 200 });
+    return withCors(request, NextResponse.json({ ok: true, ticketId, replyId: reply.id }, { status: 200 }));
   } catch (err) {
     console.error(JSON.stringify({
       bridge: 'twilio-flex',
       route: 'internal-note',
       error: err instanceof Error ? err.message : String(err),
     }));
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Internal note add failed' },
-      { status: 500 },
+    return withCors(
+      request,
+      NextResponse.json(
+        { error: err instanceof Error ? err.message : 'Internal note add failed' },
+        { status: 500 },
+      ),
     );
   }
 }

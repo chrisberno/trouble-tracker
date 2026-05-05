@@ -97,16 +97,3 @@ export interface CreateTicketInput {
   customerScope: string;
   intakeSource: string;
 }
-
-// Phase 4 NEW surface: customer search results enriched with last-ticket-author
-// timestamp for the email-collision tiebreaker policy. searchCustomersByEmail
-// returns Customer[] sorted by lastTicketAuthorAt DESC NULLS LAST so the iframe
-// can take [0] as the primary record per CEO defaults.
-export interface EnrichedCustomer {
-  id: string;                              // PP customer ID
-  name: string;                            // company / customer name
-  email: string;
-  phone?: string;
-  organization?: string;                   // alias of name when no separate company
-  lastTicketAuthorAt: string | null;       // ISO 8601; null if no tickets authored
-}

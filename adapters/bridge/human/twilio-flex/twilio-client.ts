@@ -607,6 +607,98 @@ export async function addConversationWebhook(
 }
 
 // ============================================================================
+// Conversations Media Content Service (MCS) — fetch a media binary
+//
+// TTB-13 Bug 2 (TTB-1, 2026-05-05): when a Connie agent attaches a file in the
+// canvas composer, Twilio stores it on MCS and references it from the
+// onMessageAdded webhook payload's `Media` field (JSON-stringified array of
+// {sid, filename, content_type, size, category}). To forward to PP.app as a
+// ticket attachment we:
+//   1. GET https://mcs.us1.twilio.com/v1/Services/{ChatServiceSid}/Media/{MediaSid}
+//      with Basic auth → returns metadata + presigned `links.content_direct_temporary`
+//   2. GET that presigned URL (no auth) → returns the binary
+//
+// MCS host is fixed to us1 — Conversations Service IS91e4bcb... is provisioned
+// in us1. If we ever deploy in another region, this needs region awareness.
+// ============================================================================
+
+export interface FetchConversationMediaInput {
+  chatServiceSid: string;                  // Conversations Service SID (IS...)
+  mediaSid: string;                        // Media SID (ME...)
+}
+
+export interface FetchedConversationMedia {
+  sid: string;
+  filename: string;
+  contentType: string;
+  size: number;
+  data: Buffer;                            // binary
+}
+
+interface RawMediaMetadata {
+  sid?: string;
+  filename?: string;
+  content_type?: string;
+  size?: number;
+  links?: { content_direct_temporary?: string; content?: string };
+}
+
+export async function fetchConversationMedia(
+  input: FetchConversationMediaInput,
+  config: TwilioBridgeConfig,
+): Promise<FetchedConversationMedia> {
+  // Step 1: fetch metadata + presigned URL.
+  const metadataUrl = `https://mcs.us1.twilio.com/v1/Services/${encodeURIComponent(
+    input.chatServiceSid,
+  )}/Media/${encodeURIComponent(input.mediaSid)}`;
+
+  const meta = await twilioFetch<RawMediaMetadata>({
+    method: 'GET',
+    url: metadataUrl,
+    accountSid: config.accountSid,
+    authToken: config.authToken,
+  });
+
+  const presignedUrl = meta.links?.content_direct_temporary;
+  if (!presignedUrl) {
+    throw new TwilioServerError(
+      `fetchConversationMedia: missing content_direct_temporary in MCS response for ${input.mediaSid}`,
+    );
+  }
+
+  // Step 2: download binary from presigned URL (no auth — URL is signed).
+  const start = Date.now();
+  const res = await fetch(presignedUrl);
+  const durationMs = Date.now() - start;
+  if (!res.ok) {
+    throw new TwilioServerError(
+      `fetchConversationMedia: presigned download failed (${res.status}) for ${input.mediaSid}`,
+      res.status,
+    );
+  }
+  const arrayBuffer = await res.arrayBuffer();
+  const data = Buffer.from(arrayBuffer);
+
+  console.log(JSON.stringify({
+    twilio_client: true,
+    op: 'fetchConversationMedia',
+    mediaSid: input.mediaSid,
+    chatServiceSid: input.chatServiceSid,
+    bytes: data.length,
+    contentType: meta.content_type,
+    durationMs,
+  }));
+
+  return {
+    sid: meta.sid ?? input.mediaSid,
+    filename: meta.filename ?? `${input.mediaSid}.bin`,
+    contentType: meta.content_type ?? 'application/octet-stream',
+    size: meta.size ?? data.length,
+    data,
+  };
+}
+
+// ============================================================================
 // Builder — collects all the surface a handler needs in one object
 // ============================================================================
 
@@ -620,6 +712,8 @@ export interface TwilioClient {
   createInteraction: (input: CreateInteractionInput, idempotencyKey: string) => Promise<CreateInteractionResult>;
   // Phase 5 (TTB-1) — agent canvas reply forwarder
   addConversationWebhook: (input: AddConversationWebhookInput, idempotencyKey: string) => Promise<AddConversationWebhookResult>;
+  // TTB-13 Bug 2 — attachment forwarding
+  fetchConversationMedia: (input: FetchConversationMediaInput) => Promise<FetchedConversationMedia>;
   verifySignature: (opts: Omit<Parameters<typeof verifyTwilioSignature>[0], 'authToken'>) => boolean;
 }
 
@@ -632,6 +726,7 @@ export function buildTwilioClient(config: TwilioBridgeConfig): TwilioClient {
     addConversationParticipant: (input, idempotencyKey) => addConversationParticipant(input, config, idempotencyKey),
     createInteraction: (input, idempotencyKey) => createInteraction(input, config, idempotencyKey),
     addConversationWebhook: (input, idempotencyKey) => addConversationWebhook(input, config, idempotencyKey),
+    fetchConversationMedia: (input) => fetchConversationMedia(input, config),
     verifySignature: (opts) => verifyTwilioSignature({ ...opts, authToken: config.authToken }),
   };
 }

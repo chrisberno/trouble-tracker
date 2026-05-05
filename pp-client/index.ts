@@ -18,6 +18,7 @@ export {
 export type {
   Ticket,
   Reply,
+  ReplyAttachment,
   CoreEvent,
   TicketStatus,
   TicketPriority,

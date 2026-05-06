@@ -67,7 +67,16 @@ export async function onTicketCreated(
     return;
   }
 
-  const profileUrl = `${twilio.config.iframeBaseUrl}/${ticket.id}`;
+  // TTB-1 Task 8 demo posture (2026-05-06): Phase 3 customerScope plumbing
+  // is parked as TTB-17 (PP custom_fields read-shape blocker — not solvable
+  // without Option 1 refactor or PP-side change). For now, point Pattern B
+  // ticket profile_url at agent-tools-data so the right pane shows useful
+  // staff reference content instead of duplicating the canvas Ticket tab.
+  // Voice and other task types are unaffected — they set their own
+  // profile_url via Studio Flow / different code paths.
+  // Revert this when TTB-17 lands and `?customerScope=` plumbing works
+  // end-to-end.
+  const profileUrl = 'https://connie.plus/agent-tools-data';
   const priorityNum = PRIORITY_TO_TASKROUTER[ticket.priority] ?? 5;
 
   // Stable proxy identity for the customer participant in the Twilio

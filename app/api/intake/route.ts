@@ -36,6 +36,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     customerName?: unknown;
     customerEmail?: unknown;
     customerPhone?: unknown;
+    customerScope?: unknown;
   };
 
   const title = typeof b.title === 'string' ? b.title : '';
@@ -44,7 +45,16 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const customerEmail = typeof b.customerEmail === 'string' ? b.customerEmail : '';
   const customerPhone = typeof b.customerPhone === 'string' ? b.customerPhone : '';
 
-  const customerScope = connieConfig.customerScopeRule({
+  // TTB-1 Task 8 Phase 1B — caller-supplied customerScope (from URL query
+  // forwarded by the intake form) takes precedence when it matches one of
+  // the configured scopes. Falls back to the referer-based rule otherwise
+  // (today's behavior). Validating against the allowlist prevents arbitrary
+  // string injection from the client.
+  const allowedScopes = new Set(config.customerScopes.map((c) => c.scope));
+  const bodyScope = typeof b.customerScope === 'string' && allowedScopes.has(b.customerScope)
+    ? b.customerScope
+    : null;
+  const customerScope = bodyScope ?? connieConfig.customerScopeRule({
     headers: { referer: request.headers.get('referer') ?? undefined },
   });
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 type SubmitState = "idle" | "submitting" | "success" | "error";
 
@@ -20,12 +20,31 @@ const EMPTY_FORM: FormData = {
   customerPhone: "",
 };
 
+// TTB-1 Task 8 Phase 1B — allowed customerScope values that the upstream
+// caller (connie.plus's "Create New Ticket" button) may pass via
+// ?customerScope=. Anything else is ignored; the bridge falls back to its
+// referer-based rule (today's behavior). Mirrors deployments/connie/config.json
+// customerScopes[].scope values.
+const ALLOWED_CUSTOMER_SCOPES = new Set(["NSS", "HHOVV", "Lifeline"]);
+
 export default function IntakePage() {
   const [formData, setFormData] = useState<FormData>(EMPTY_FORM);
   const [submitState, setSubmitState] = useState<SubmitState>("idle");
   const [ticketId, setTicketId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [fallbackEmail, setFallbackEmail] = useState<string | null>(null);
+  // Captured from URL on mount; forwarded through form submission body so
+  // /api/intake can override its referer-based rule when the upstream knows
+  // which child Flex domain spawned this intake.
+  const [customerScope, setCustomerScope] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const param = new URL(window.location.href).searchParams.get("customerScope");
+    if (param && ALLOWED_CUSTOMER_SCOPES.has(param)) {
+      setCustomerScope(param);
+    }
+  }, []);
 
   const updateField = (field: keyof FormData, value: string) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
@@ -46,10 +65,13 @@ export default function IntakePage() {
     setFallbackEmail(null);
 
     try {
+      // Phase 1B: forward customerScope (from URL) when present. /api/intake
+      // accepts it as a soft override of the referer-based rule.
+      const submitBody = customerScope ? { ...formData, customerScope } : formData;
       const response = await fetch("/api/intake", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData),
+        body: JSON.stringify(submitBody),
       });
       const data = await response.json().catch(() => ({}));
 

@@ -10,6 +10,7 @@ import { isEventProcessed, markEventProcessed } from './internal-db';
 export {
   createTicket,
   getTicket,
+  listTickets,
   addReply,
   updateStatus,
   resolveTicket,

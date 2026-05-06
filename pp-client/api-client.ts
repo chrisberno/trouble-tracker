@@ -484,6 +484,66 @@ export async function createTicket(
   return getTicket(newId, config);
 }
 
+// TTB-1 Task 8 Phase 2 — list tickets, optionally filtered by scope/status.
+//
+// Perfex's API surface for listing isn't fully documented; the search endpoint
+// (/api/tickets/search/<keyword>) is the closest existing analog and is what
+// pp-client already uses for contacts (/api/contacts/search/...). We use the
+// scope value as the search keyword and post-filter the result against the
+// canonical custom_field value to drop any false-positive text matches that
+// happen to contain the scope token.
+//
+// On any underlying PP error (404 etc.) we return an empty array — the list
+// page is non-critical and an empty list is a better UX than a 500.
+export async function listTickets(
+  filter: { customerScope?: string; status?: TicketStatus; limit?: number },
+  config: DeploymentConfig,
+): Promise<Ticket[]> {
+  const keyword = filter.customerScope?.trim() ?? '';
+  const path = keyword
+    ? `/api/tickets/search/${encodeURIComponent(keyword)}`
+    : '/api/tickets';
+
+  let res: unknown;
+  try {
+    res = await ppFetch<unknown>({
+      method: 'GET',
+      path,
+      config,
+    });
+  } catch (err) {
+    if (err instanceof PpClientNotFoundError) return [];
+    throw err;
+  }
+
+  const rawList: PpTicketShape[] = Array.isArray(res)
+    ? (res as PpTicketShape[])
+    : res && typeof res === 'object' && 'data' in res
+      ? ((res as { data?: PpTicketShape[] | PpTicketShape }).data instanceof Array
+          ? (res as { data: PpTicketShape[] }).data
+          : [(res as { data: PpTicketShape }).data])
+      : [];
+
+  let tickets = rawList
+    .filter((r): r is PpTicketShape => !!r && (!!r.ticketid || !!r.id))
+    .map((r) => mapPpTicketToNormalized(r, config));
+
+  if (filter.customerScope) {
+    tickets = tickets.filter((t) => t.customerScope === filter.customerScope);
+  }
+  if (filter.status) {
+    tickets = tickets.filter((t) => t.status === filter.status);
+  }
+
+  // Sort by createdAt desc — newest first
+  tickets.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+  if (filter.limit && tickets.length > filter.limit) {
+    return tickets.slice(0, filter.limit);
+  }
+  return tickets;
+}
+
 export async function getTicket(
   ticketId: string,
   config: DeploymentConfig,

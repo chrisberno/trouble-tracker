@@ -182,14 +182,38 @@ interface PpTicketShape {
 function readCustomField(
   ticket: PpTicketShape,
   key: string,
+  numericId?: number,
 ): string | undefined {
+  // 1. Slug-keyed object: { custom_fields: { customer_scope: "NSS" } }
   if (ticket.custom_fields && ticket.custom_fields[key] !== undefined) {
     const v = ticket.custom_fields[key];
     return v === undefined || v === null ? undefined : String(v);
   }
+  // 2. Array of metadata: { customfields: [{ slug: "customer_scope", value: "NSS" }] }
   if (Array.isArray(ticket.customfields)) {
     for (const cf of ticket.customfields) {
       if (cf?.name === key || cf?.slug === key) {
+        return cf.value;
+      }
+    }
+  }
+  // 3. Numeric-ID-keyed object — Perfex's actual response shape on this tenant.
+  // The WRITE path uses custom_fields[<fieldto>][<numeric_id>] = value (per
+  // Perfex's handle_custom_fields_post helper); the READ path was previously
+  // only checking slug-shapes. This third lookup closes the asymmetry.
+  // Discovered 2026-05-06 via Conversations API evidence on ticket #28
+  // (CEO posted with body customerScope=NSS; conversation attributes returned
+  // customerScope="" — confirming the slug-only read missed the numeric-keyed
+  // response shape).
+  if (numericId !== undefined && ticket.custom_fields && ticket.custom_fields[String(numericId)] !== undefined) {
+    const v = ticket.custom_fields[String(numericId)];
+    return v === undefined || v === null ? undefined : String(v);
+  }
+  // 4. Array entries keyed by numeric id: [{ id: 1, value: "NSS" }]
+  if (numericId !== undefined && Array.isArray(ticket.customfields)) {
+    for (const cf of ticket.customfields) {
+      // eslint-disable-next-line eqeqeq
+      if (cf && (cf as { id?: number | string }).id != undefined && String((cf as { id?: number | string }).id) === String(numericId)) {
         return cf.value;
       }
     }
@@ -224,8 +248,8 @@ export function mapPpTicketToNormalized(
     phone: raw.phonenumber ?? raw.phone,
   };
 
-  const customerScope = readCustomField(raw, 'customer_scope') ?? '';
-  const intakeSource = readCustomField(raw, 'intake_source') ?? '';
+  const customerScope = readCustomField(raw, 'customer_scope', config.customFieldIds.ticket.customer_scope) ?? '';
+  const intakeSource = readCustomField(raw, 'intake_source', config.customFieldIds.ticket.intake_source) ?? '';
 
   const createdAtRaw = raw.datecreated ?? raw.date ?? '';
   const updatedAtRaw = raw.last_reply ?? raw.lastreply ?? createdAtRaw;
@@ -493,26 +517,34 @@ export async function createTicket(
 // canonical custom_field value to drop any false-positive text matches that
 // happen to contain the scope token.
 //
-// On any underlying PP error (404 etc.) we return an empty array — the list
-// page is non-critical and an empty list is a better UX than a 500.
+// Empty-keyword behavior — UPDATED 2026-05-06 after CEO repro showed the
+// previous "/api/tickets" fallback returned 500 (Perfex doesn't expose a
+// generic list endpoint). For an unfiltered listing we now return [] without
+// hitting PP at all. The list page renders "No tickets" cleanly. If a
+// future Perfex addon provides a list endpoint, replace this empty-return
+// with the verified path; do NOT re-introduce a guessed endpoint.
+//
+// On any underlying PP error (404, 500 etc.) we return an empty array — the
+// list page is non-critical and an empty list is a better UX than a 500.
 export async function listTickets(
   filter: { customerScope?: string; status?: TicketStatus; limit?: number },
   config: DeploymentConfig,
 ): Promise<Ticket[]> {
   const keyword = filter.customerScope?.trim() ?? '';
-  const path = keyword
-    ? `/api/tickets/search/${encodeURIComponent(keyword)}`
-    : '/api/tickets';
+
+  // No scope = no listing (PP doesn't expose a verified all-tickets endpoint).
+  if (!keyword) return [];
 
   let res: unknown;
   try {
     res = await ppFetch<unknown>({
       method: 'GET',
-      path,
+      path: `/api/tickets/search/${encodeURIComponent(keyword)}`,
       config,
     });
   } catch (err) {
     if (err instanceof PpClientNotFoundError) return [];
+    if (err instanceof PpClientServerError) return []; // PP 500s — degrade to empty
     throw err;
   }
 

@@ -1,0 +1,174 @@
+// app/bridge/tickets/page.tsx
+//
+// TTB-1 Task 8 Phase 2 — list view of tickets, filtered by ?customerScope=.
+// Server-rendered. Used by:
+//   1. connie.plus "Show All Tickets" button (links here with ?customerScope=
+//      derived from the iframe-context referrer detection in Phase 1B)
+//   2. Phase 3 right-pane CRM container during a Pattern B task (basecamp
+//      flex-config sets enhanced_crm_container.url to point here, with
+//      {{task.customerScope}} interpolated)
+//
+// Status filter defaults to "open" — agents working a queue want active
+// tickets, not closed archive. ?status=all opens up the full set.
+//
+// Single-ticket detail view links to the existing /bridge/twilio-flex/ticket/[id]
+// page (already polished, has Reply / Status / Note buttons). No new
+// detail-view route needed.
+
+import Link from 'next/link';
+import { listTickets } from '@/pp-client';
+import type { Ticket } from '@/pp-client';
+import { connieConfig } from '@/deployments/connie';
+import config from '@/deployments/connie/config.json';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+interface SearchParamsShape {
+  customerScope?: string;
+  status?: string;
+}
+
+const DEFAULT_LIMIT = 50;
+
+const ALLOWED_SCOPES = new Set(config.customerScopes.map((c) => c.scope));
+
+function StatusPill({ status }: { status: string }) {
+  const color =
+    status === 'open' ? '#16a34a'
+    : status === 'in_progress' ? '#2563eb'
+    : status === 'waiting' ? '#ca8a04'
+    : status === 'closed' ? '#6b7280'
+    : status === 'resolved' ? '#0891b2'
+    : '#9ca3af';
+  return (
+    <span style={{
+      display: 'inline-block',
+      padding: '2px 10px',
+      borderRadius: '12px',
+      fontSize: '12px',
+      fontWeight: 500,
+      backgroundColor: `${color}20`,
+      color,
+      textTransform: 'capitalize',
+    }}>{status.replace('_', ' ')}</span>
+  );
+}
+
+export default async function TicketsListPage({
+  searchParams,
+}: {
+  searchParams: Promise<SearchParamsShape>;
+}) {
+  const params = await searchParams;
+  const requestedScope = (params.customerScope ?? '').trim();
+  const customerScope = requestedScope && ALLOWED_SCOPES.has(requestedScope)
+    ? requestedScope
+    : undefined;
+  const showAll = params.status === 'all';
+  const statusFilter = showAll ? undefined : 'open' as const;
+
+  let tickets: Ticket[] = [];
+  let error: string | null = null;
+  try {
+    tickets = await listTickets(
+      { customerScope, status: statusFilter, limit: DEFAULT_LIMIT },
+      connieConfig,
+    );
+  } catch (err) {
+    error = err instanceof Error ? err.message : 'Failed to load tickets';
+  }
+
+  const headingScope = customerScope ?? (requestedScope ? `Unknown (${requestedScope})` : 'All scopes');
+
+  return (
+    <div style={{ minHeight: '100vh', padding: '20px', backgroundColor: '#f9fafb', fontFamily: 'system-ui, sans-serif' }}>
+      <div style={{ maxWidth: '1100px', margin: '0 auto' }}>
+        <div style={{ marginBottom: '20px' }}>
+          <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#111827', margin: 0 }}>Tickets</h1>
+          <div style={{ marginTop: '6px', fontSize: '14px', color: '#4b5563' }}>
+            Scope: <strong>{headingScope}</strong>
+            {' · '}
+            Status: <strong>{showAll ? 'all' : 'open'}</strong>
+            {' · '}
+            <Link
+              href={`/bridge/tickets?${new URLSearchParams({
+                ...(customerScope ? { customerScope } : {}),
+                ...(showAll ? {} : { status: 'all' }),
+              }).toString()}`}
+              style={{ color: '#2563eb', textDecoration: 'underline' }}
+            >
+              {showAll ? 'show open only' : 'show all statuses'}
+            </Link>
+          </div>
+        </div>
+
+        {error && (
+          <div style={{
+            padding: '12px 16px',
+            backgroundColor: '#fee2e2',
+            border: '1px solid #fecaca',
+            borderRadius: '8px',
+            color: '#991b1b',
+            fontSize: '14px',
+            marginBottom: '16px',
+          }}>
+            <strong>Couldn&apos;t load tickets:</strong> {error}
+          </div>
+        )}
+
+        {tickets.length === 0 ? (
+          <div style={{
+            padding: '40px 16px',
+            textAlign: 'center',
+            backgroundColor: 'white',
+            borderRadius: '8px',
+            border: '1px solid #e5e7eb',
+            color: '#6b7280',
+          }}>
+            No {showAll ? '' : 'open '}tickets{customerScope ? ` for ${customerScope}` : ''}.
+          </div>
+        ) : (
+          <div style={{ backgroundColor: 'white', borderRadius: '8px', border: '1px solid #e5e7eb', overflow: 'hidden' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
+              <thead style={{ backgroundColor: '#f3f4f6', textAlign: 'left' }}>
+                <tr>
+                  <th style={{ padding: '10px 14px', fontWeight: 600, color: '#374151' }}>#</th>
+                  <th style={{ padding: '10px 14px', fontWeight: 600, color: '#374151' }}>Subject</th>
+                  <th style={{ padding: '10px 14px', fontWeight: 600, color: '#374151' }}>Status</th>
+                  <th style={{ padding: '10px 14px', fontWeight: 600, color: '#374151' }}>Customer</th>
+                  <th style={{ padding: '10px 14px', fontWeight: 600, color: '#374151' }}>Updated</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tickets.map((t) => (
+                  <tr key={t.id} style={{ borderTop: '1px solid #e5e7eb' }}>
+                    <td style={{ padding: '10px 14px' }}>
+                      <Link
+                        href={`/bridge/twilio-flex/ticket/${encodeURIComponent(t.id)}`}
+                        style={{ color: '#2563eb', textDecoration: 'underline', fontWeight: 500 }}
+                      >
+                        #{t.id}
+                      </Link>
+                    </td>
+                    <td style={{ padding: '10px 14px', color: '#111827' }}>{t.subject || '(no subject)'}</td>
+                    <td style={{ padding: '10px 14px' }}><StatusPill status={t.status} /></td>
+                    <td style={{ padding: '10px 14px', color: '#374151' }}>{t.customer.name}</td>
+                    <td style={{ padding: '10px 14px', color: '#6b7280', fontSize: '13px' }}>
+                      {new Date(t.updatedAt).toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {tickets.length === DEFAULT_LIMIT && (
+              <div style={{ padding: '10px 14px', backgroundColor: '#f9fafb', fontSize: '12px', color: '#6b7280', textAlign: 'center', borderTop: '1px solid #e5e7eb' }}>
+                Showing first {DEFAULT_LIMIT}. Refine scope or visit PP admin for the full set.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

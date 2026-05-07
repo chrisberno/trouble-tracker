@@ -1,15 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { handleWebFormIntake } from '@/adapters/inbound/web-form/handler';
-import { connieConfig } from '@/deployments/connie';
+import { connieConfig, connieTwilioConfig } from '@/deployments/connie';
 import config from '@/deployments/connie/config.json';
-// TTB-17 follow-up (2026-05-07): side-effect import registers the Twilio Flex
-// bridge against pp-client's event dispatch in this route's runtime. Without
-// this, the synthetic `publish(ticket.created)` from handleWebFormIntake fires
-// into an empty handler map and the bridge never runs — confirmed by CCTO-4
-// during post-merge verification of PR #18. See lib/bridge-bootstrap.ts.
-import '@/lib/bridge-bootstrap';
+import { register as registerTwilioBridge } from '@/adapters/bridge/human/twilio-flex';
 
 export const runtime = 'nodejs';
+
+// TTB-17 follow-up (2026-05-07): direct module-scope register call.
+//
+// Vercel runs each Next.js API route in its own isolated Node runtime — the
+// handlers Map inside pp-client/index.ts is per-route. The synthetic
+// publish('ticket.created') from handleWebFormIntake fires into THIS route's
+// handler map, so the bridge must be subscribed in THIS route's module load.
+//
+// The first attempt at this fix (PR #19) used a shared `lib/bridge-bootstrap`
+// side-effect import — Next.js + swc tree-shook the import despite the value
+// export. Direct call here mirrors the pattern in app/api/pp-webhook/route.ts
+// and is bundler-stable. register() has its own idempotency guard.
+registerTwilioBridge(connieTwilioConfig);
 
 function getCorsHeaders(request: NextRequest): Record<string, string> {
   const origin = request.headers.get('origin');

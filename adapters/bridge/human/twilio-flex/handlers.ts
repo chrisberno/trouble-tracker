@@ -68,15 +68,33 @@ export async function onTicketCreated(
     return;
   }
 
-  // TTB-17 fix #3: bridge-db is authoritative for ticketId→scope. The intake
-  // handler pre-writes the scope from the original request body BEFORE PP
-  // fires its ticket.created webhook. PP's webhook payload has empty scope
-  // (PP REST does not return custom_fields). So we resolve effective scope as:
-  //   1. bridge-db pre-write (intake-supplied, always reliable when intake ran)
-  //   2. event.ticket.customerScope (synthetic-publish fast-path; non-empty
-  //      only when in-process pub/sub actually wired through)
+  // TTB-17 fix #3+#4: bridge-db is authoritative for ticketId→scope. The
+  // intake handler pre-writes the scope from the original request body — but
+  // PP often fires its ticket.created webhook BEFORE intake's createTicket
+  // call returns, so this bridge handler can race ahead of the prewrite.
+  // CCTO-4 confirmed this race observationally on ticket #42: bridge ran with
+  // empty scope, prewrite landed seconds later, Twilio resources were already
+  // immutable.
+  //
+  // Fix: retry-on-empty. Read bridge-db; if scope is empty, poll up to 2s in
+  // 250ms intervals waiting for intake's prewrite to land. Total added latency
+  // only on the race-loss path; race-win path returns on first read.
+  //
+  // Resolution order:
+  //   1. bridge-db pre-write (intake-supplied; race-tolerant via retry)
+  //   2. event.ticket.customerScope (in-process synthetic-publish fast-path —
+  //      currently always empty in production due to bundler/runtime quirk)
   //   3. '' (no scope binding — degrades to "Unknown" in UI)
-  const prewrittenMapping = await getBridgeMappingByTicketId(ticket.id);
+  let prewrittenMapping = await getBridgeMappingByTicketId(ticket.id);
+  let scopeRetries = 0;
+  if (!prewrittenMapping?.customerScope?.trim()) {
+    for (let i = 0; i < 8; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      prewrittenMapping = await getBridgeMappingByTicketId(ticket.id);
+      scopeRetries++;
+      if (prewrittenMapping?.customerScope?.trim()) break;
+    }
+  }
   const effectiveScope =
     (prewrittenMapping?.customerScope && prewrittenMapping.customerScope.trim()) ||
     (ticket.customerScope && ticket.customerScope.trim()) ||
@@ -89,6 +107,7 @@ export async function onTicketCreated(
     eventScope: ticket.customerScope || '',
     prewrittenScope: prewrittenMapping?.customerScope || '',
     effectiveScope,
+    scopeRetries,
   }));
 
   // TTB-17 disposition (Sprint 2.0, 2026-05-07): demo-posture override

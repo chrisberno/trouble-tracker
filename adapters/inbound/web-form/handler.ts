@@ -5,6 +5,7 @@ import {
   PpClientRateLimitError,
   PpClientAuthError,
 } from '@/pp-client/types';
+import { prewriteBridgeMappingScope } from '@/adapters/bridge/human/twilio-flex/bridge-db';
 
 export interface WebFormIntakePayload {
   title: string;
@@ -77,25 +78,45 @@ export async function handleWebFormIntake(
       }),
     );
 
-    // TTB-17: synthetic publish of ticket.created with the original
-    // customerScope from the request body. PP REST does not return
-    // custom_fields, so the normalized ticket returned by createTicket has an
-    // empty customerScope (verified 2026-05-06 with TT tenant token). The PP
-    // ticket.created webhook will fire shortly after this and re-publish the
-    // same event, but bridge-side idempotency on `twilio:task:<ticket.id>`
-    // makes the second invocation a no-op. We synthesize here with
-    // customerScope overridden to the original input so the bridge gets the
-    // value it needs to populate task.attributes.customerScope and bridge-db
-    // customer_scope index.
+    // TTB-17 fix #3 — pre-write scope to bridge-db BEFORE PP fires its
+    // ticket.created webhook. PP REST does not return custom_fields in
+    // GET /api/tickets/<id>, so the bridge handler can't read the scope from
+    // PP's webhook payload. By pre-writing the scope here (with the original
+    // input value, not the empty PP-roundtrip value), the bridge handler in
+    // /api/pp-webhook reads this row and uses its scope as authoritative.
+    //
+    // This sidesteps a bundler/runtime issue surfaced 2026-05-07: the
+    // synthetic in-process publish() from this route was not invoking the
+    // bridge subscriber registered in /api/intake's runtime (Vercel function
+    // logs confirmed every onTicketCreated invocation came from the
+    // /api/pp-webhook function, never from /api/intake). Whether due to
+    // tree-shake, per-route module duplication, or some other bundler quirk,
+    // forcing dependency on cross-route in-process pub/sub is fragile. The
+    // bridge-db pre-write is bundler-agnostic — both routes share the
+    // Postgres backend.
+    try {
+      await prewriteBridgeMappingScope(ticket.id, customerScope);
+    } catch (prewriteErr) {
+      console.warn(
+        JSON.stringify({
+          web_form_intake: true,
+          warning: 'prewriteBridgeMappingScope failed; PP webhook will see empty scope',
+          ticketId: ticket.id,
+          error: prewriteErr instanceof Error ? prewriteErr.message : String(prewriteErr),
+        }),
+      );
+    }
+
+    // Synthetic publish kept as belt-and-suspenders. If the bundler/runtime
+    // issue gets resolved later, this provides fast-path bridge dispatch
+    // without waiting for PP's webhook round-trip. Currently a no-op in
+    // production (subscriber map empty) but harmless and self-recovering.
     try {
       await publish({
         kind: 'ticket.created',
         ticket: { ...ticket, customerScope },
       });
     } catch (publishErr) {
-      // Bridge errors don't fail the intake response — the customer-facing
-      // submit succeeded; bridge fan-out is best-effort. The PP webhook is the
-      // safety net.
       console.warn(
         JSON.stringify({
           web_form_intake: true,

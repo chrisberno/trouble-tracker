@@ -39,6 +39,7 @@ import {
   upsertBridgeMapping,
   isBridgeKeyProcessed,
   markBridgeKeyProcessed,
+  getBridgeMappingByTicketId,
 } from './bridge-db';
 
 // Map our normalized priority → legacy TaskRouter Priority form param.
@@ -66,6 +67,29 @@ export async function onTicketCreated(
     }));
     return;
   }
+
+  // TTB-17 fix #3: bridge-db is authoritative for ticketId→scope. The intake
+  // handler pre-writes the scope from the original request body BEFORE PP
+  // fires its ticket.created webhook. PP's webhook payload has empty scope
+  // (PP REST does not return custom_fields). So we resolve effective scope as:
+  //   1. bridge-db pre-write (intake-supplied, always reliable when intake ran)
+  //   2. event.ticket.customerScope (synthetic-publish fast-path; non-empty
+  //      only when in-process pub/sub actually wired through)
+  //   3. '' (no scope binding — degrades to "Unknown" in UI)
+  const prewrittenMapping = await getBridgeMappingByTicketId(ticket.id);
+  const effectiveScope =
+    (prewrittenMapping?.customerScope && prewrittenMapping.customerScope.trim()) ||
+    (ticket.customerScope && ticket.customerScope.trim()) ||
+    '';
+  console.log(JSON.stringify({
+    bridge: 'twilio-flex',
+    handler: 'onTicketCreated',
+    info: 'scope-resolution',
+    ticketId: ticket.id,
+    eventScope: ticket.customerScope || '',
+    prewrittenScope: prewrittenMapping?.customerScope || '',
+    effectiveScope,
+  }));
 
   // TTB-17 disposition (Sprint 2.0, 2026-05-07): demo-posture override
   // (`profile_url = 'https://connie.plus/agent-tools-data'`) reverted now that
@@ -108,15 +132,15 @@ export async function onTicketCreated(
     customerName: ticket.customer.name,
     customerPhone: ticket.customer.phone ?? '',
     customerEmail: ticket.customer.email ?? '',
-    customerScope: ticket.customerScope,
+    customerScope: effectiveScope,
 
     customers: {
       name: ticket.customer.name,
       phone: ticket.customer.phone ?? '',
-      organization: ticket.customerScope,
+      organization: effectiveScope,
     },
 
-    origin: ticket.customerScope,              // backward-compat for basecamp Email.tsx queue rendering
+    origin: effectiveScope,                    // backward-compat for basecamp Email.tsx queue rendering
     timestamp: new Date().toISOString(),
     channel: 'support-ticket',
     conversationsTaskKey: `support_ticket_${ticket.id}`,
@@ -135,7 +159,7 @@ export async function onTicketCreated(
         friendlyName: conversationFriendlyName,
         attributes: {
           ticketId: ticket.id,
-          customerScope: ticket.customerScope,
+          customerScope: effectiveScope,
           deploymentId: twilio.config.deploymentId,
           intakeSource: 'web-form',
         },
@@ -153,7 +177,7 @@ export async function onTicketCreated(
           name: ticket.customer.name,
           email: ticket.customer.email ?? '',
           phone: ticket.customer.phone ?? '',
-          customerScope: ticket.customerScope,
+          customerScope: effectiveScope,
         },
       },
       `twilio:participant:${ticket.id}`,
@@ -227,7 +251,7 @@ export async function onTicketCreated(
       // ticket via PP getTicket. ticket.customerScope reaches here populated
       // because the intake handler synthetically publishes ticket.created with
       // the original customerScope (path (a) in TTB-17 design).
-      customerScope: ticket.customerScope || null,
+      customerScope: effectiveScope || null,
     });
 
     await markBridgeKeyProcessed(idempotencyKey);

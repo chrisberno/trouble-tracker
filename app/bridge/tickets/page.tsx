@@ -26,7 +26,10 @@
 import Link from 'next/link';
 import { getTicket } from '@/pp-client';
 import type { Ticket } from '@/pp-client';
-import { listTicketIdsByScope } from '@/adapters/bridge/human/twilio-flex/bridge-db';
+import {
+  listTicketIdsByScope,
+  getBridgeMappingByTicketId,
+} from '@/adapters/bridge/human/twilio-flex/bridge-db';
 import { connieConfig } from '@/deployments/connie';
 import config from '@/deployments/connie/config.json';
 
@@ -36,6 +39,7 @@ export const dynamic = 'force-dynamic';
 interface SearchParamsShape {
   customerScope?: string;
   status?: string;
+  ticketId?: string;
 }
 
 const DEFAULT_LIMIT = 50;
@@ -70,7 +74,37 @@ export default async function TicketsListPage({
   searchParams: Promise<SearchParamsShape>;
 }) {
   const params = await searchParams;
-  const requestedScope = (params.customerScope ?? '').trim();
+
+  // TTB-17 fix #7 (2026-05-07, Sprint 2.0): the Flex Admin Active Task URL
+  // can carry `?ticketId={{task.ticketId}}` instead of `?customerScope=`.
+  // task.ticketId is reliably populated on every Pattern B task; scope is
+  // not (Twilio attribute-write race vs intake's bridge-db prewrite couldn't
+  // be reliably resolved across 5 PRs of attempts). Bridge-db has been the
+  // source of truth for ticketId→scope since PR #21 — read scope from there
+  // and use it as the filter. Falls back to the original `?customerScope=`
+  // path for connie.plus "Show All Tickets" callers and direct deep-links.
+  const requestedTicketId = (params.ticketId ?? '').trim();
+  let scopeFromTicketId: string | undefined;
+  if (requestedTicketId) {
+    try {
+      const mapping = await getBridgeMappingByTicketId(requestedTicketId);
+      const dbScope = mapping?.customerScope?.trim();
+      if (dbScope && ALLOWED_SCOPES.has(dbScope)) {
+        scopeFromTicketId = dbScope;
+      }
+    } catch (lookupErr) {
+      console.warn(
+        JSON.stringify({
+          bridge_tickets_page: true,
+          warning: 'ticketId scope lookup failed; falling back to ?customerScope= param',
+          ticketId: requestedTicketId,
+          error: lookupErr instanceof Error ? lookupErr.message : String(lookupErr),
+        }),
+      );
+    }
+  }
+
+  const requestedScope = scopeFromTicketId ?? (params.customerScope ?? '').trim();
   const customerScope = requestedScope && ALLOWED_SCOPES.has(requestedScope)
     ? requestedScope
     : undefined;

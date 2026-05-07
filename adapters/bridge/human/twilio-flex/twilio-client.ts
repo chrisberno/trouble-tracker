@@ -702,6 +702,60 @@ export async function fetchConversationMedia(
 // Builder — collects all the surface a handler needs in one object
 // ============================================================================
 
+// TTB-17 fix #5 — backfill methods for the race-loss path.
+// Twilio resources created with empty customerScope can be retroactively
+// fixed by calling these AFTER intake's prewrite is durable on bridge-db
+// (which is by definition true once the intake POST has returned 200 to
+// the client; Vercel-side prewrite runs synchronously before the response).
+
+export interface UpdateConversationAttributesInput {
+  conversationSid: string;
+  attributes: Record<string, unknown>;  // serialized as JSON in the Attributes form param
+}
+
+export async function updateConversationAttributes(
+  input: UpdateConversationAttributesInput,
+  config: TwilioBridgeConfig,
+): Promise<void> {
+  const url = `https://conversations.twilio.com/v1/Services/${encodeURIComponent(
+    config.conversationsServiceSid,
+  )}/Conversations/${encodeURIComponent(input.conversationSid)}`;
+  const formBody: Record<string, string> = {
+    Attributes: JSON.stringify(input.attributes),
+  };
+  await twilioFetch<unknown>({
+    method: 'POST',
+    url,
+    formBody,
+    accountSid: config.accountSid,
+    authToken: config.authToken,
+  });
+}
+
+export interface UpdateTaskAttributesInput {
+  taskSid: string;
+  attributes: Record<string, unknown>;
+}
+
+export async function updateTaskAttributes(
+  input: UpdateTaskAttributesInput,
+  config: TwilioBridgeConfig,
+): Promise<void> {
+  const url = `https://taskrouter.twilio.com/v1/Workspaces/${encodeURIComponent(
+    config.workspaceSid,
+  )}/Tasks/${encodeURIComponent(input.taskSid)}`;
+  const formBody: Record<string, string> = {
+    Attributes: JSON.stringify(input.attributes),
+  };
+  await twilioFetch<unknown>({
+    method: 'POST',
+    url,
+    formBody,
+    accountSid: config.accountSid,
+    authToken: config.authToken,
+  });
+}
+
 export interface TwilioClient {
   config: TwilioBridgeConfig;
   createTask: (input: CreateTaskInput, idempotencyKey: string) => Promise<CreateTaskResult>;
@@ -714,6 +768,9 @@ export interface TwilioClient {
   addConversationWebhook: (input: AddConversationWebhookInput, idempotencyKey: string) => Promise<AddConversationWebhookResult>;
   // TTB-13 Bug 2 — attachment forwarding
   fetchConversationMedia: (input: FetchConversationMediaInput) => Promise<FetchedConversationMedia>;
+  // TTB-17 fix #5 — race-loss backfill
+  updateConversationAttributes: (input: UpdateConversationAttributesInput) => Promise<void>;
+  updateTaskAttributes: (input: UpdateTaskAttributesInput) => Promise<void>;
   verifySignature: (opts: Omit<Parameters<typeof verifyTwilioSignature>[0], 'authToken'>) => boolean;
 }
 
@@ -727,6 +784,8 @@ export function buildTwilioClient(config: TwilioBridgeConfig): TwilioClient {
     createInteraction: (input, idempotencyKey) => createInteraction(input, config, idempotencyKey),
     addConversationWebhook: (input, idempotencyKey) => addConversationWebhook(input, config, idempotencyKey),
     fetchConversationMedia: (input) => fetchConversationMedia(input, config),
+    updateConversationAttributes: (input) => updateConversationAttributes(input, config),
+    updateTaskAttributes: (input) => updateTaskAttributes(input, config),
     verifySignature: (opts) => verifyTwilioSignature({ ...opts, authToken: config.authToken }),
   };
 }

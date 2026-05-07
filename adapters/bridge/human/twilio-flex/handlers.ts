@@ -264,14 +264,69 @@ export async function onTicketCreated(
       interactionSid: interaction.interactionSid,
       conversationSid: conv.conversationSid,
       taskSid: interaction.taskSid,
-      // TTB-17: bridge-db is source of truth for ticketId→scope. PP REST does
-      // not return custom_fields in GET /api/tickets/<id>, so the /bridge/tickets
-      // list view queries bridge-db for the scope index, then fetches each
-      // ticket via PP getTicket. ticket.customerScope reaches here populated
-      // because the intake handler synthetically publishes ticket.created with
-      // the original customerScope (path (a) in TTB-17 design).
+      // upsertBridgeMapping uses COALESCE on customer_scope so an earlier
+      // intake-side prewrite is preserved if effectiveScope is null/empty here.
       customerScope: effectiveScope || null,
     });
+
+    // TTB-17 fix #5 — race-loss backfill (CCTO-4 verification post fix #4).
+    // CCTO-4 confirmed via tickets #42, #43, #45 that the retry-on-empty in
+    // the read path doesn't reliably catch intake's prewrite within 2s. Could
+    // be Neon read-replica lag, Vercel function cold-start latency in intake,
+    // or PP createTicket round-trip variance — irrelevant to this fix.
+    //
+    // By the time we reach this line, the intake POST has long since returned
+    // 200 to the client (synthetic publish + prewrite both ran during intake).
+    // So ANY scope mismatch we observe here means the bridge handler raced
+    // ahead, lost, and created Twilio resources with empty scope. Backfill
+    // via attribute updates is bundler/replica-agnostic — by the time we
+    // re-read here, the prewrite is durable and visible from any connection.
+    if (!effectiveScope) {
+      const finalMapping = await getBridgeMappingByTicketId(ticket.id);
+      const finalScope = finalMapping?.customerScope?.trim();
+      if (finalScope) {
+        console.log(JSON.stringify({
+          bridge: 'twilio-flex',
+          handler: 'onTicketCreated',
+          info: 'race-loss backfill',
+          ticketId: ticket.id,
+          finalScope,
+          conversationSid: conv.conversationSid,
+          taskSid: interaction.taskSid,
+        }));
+        try {
+          // Backfill Conversation attributes
+          await twilio.updateConversationAttributes({
+            conversationSid: conv.conversationSid,
+            attributes: {
+              ticketId: ticket.id,
+              customerScope: finalScope,
+              deploymentId: twilio.config.deploymentId,
+              intakeSource: 'web-form',
+            },
+          });
+          // Backfill Task attributes — preserve everything else, just patch scope-bearing fields
+          await twilio.updateTaskAttributes({
+            taskSid: interaction.taskSid,
+            attributes: {
+              ...taskAttributes,
+              customerScope: finalScope,
+              customers: { ...taskAttributes.customers, organization: finalScope },
+              origin: finalScope,
+              priority_number: priorityNum,
+            },
+          });
+        } catch (backfillErr) {
+          console.warn(JSON.stringify({
+            bridge: 'twilio-flex',
+            handler: 'onTicketCreated',
+            warning: 'race-loss backfill failed; resources will retain empty scope',
+            ticketId: ticket.id,
+            error: backfillErr instanceof Error ? backfillErr.message : String(backfillErr),
+          }));
+        }
+      }
+    }
 
     await markBridgeKeyProcessed(idempotencyKey);
 

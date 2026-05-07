@@ -126,6 +126,32 @@ export async function listTicketIdsByScope(
   return result.rows.map((r) => r.ticket_id as string);
 }
 
+// TTB-17 fix #3: pre-write the customer_scope binding from the intake handler
+// BEFORE PP fires its ticket.created webhook. This makes bridge-db the
+// authoritative source for ticketId→scope, decoupling the bridge from any
+// runtime/bundler/race quirks of in-process pub/sub. The bridge handler
+// (onTicketCreated) reads this row at the top and uses its scope as the
+// effective value, regardless of what the event payload says.
+//
+// Inserts a placeholder mapping with task_sid empty; the real upsert from
+// onTicketCreated populates task_sid + sids and (via COALESCE) preserves the
+// pre-written customer_scope. Idempotent — if the row already exists with a
+// scope value, we don't overwrite it (early call wins; subsequent calls with
+// a more-specific scope can be added later if needed).
+export async function prewriteBridgeMappingScope(
+  ticketId: string,
+  scope: string,
+): Promise<void> {
+  if (!scope) return;
+  await initBridgeMappingTable();
+  await sql`
+    INSERT INTO twilio_bridge_mappings (ticket_id, task_sid, customer_scope)
+    VALUES (${ticketId}, '', ${scope})
+    ON CONFLICT (ticket_id) DO UPDATE SET
+      customer_scope = COALESCE(twilio_bridge_mappings.customer_scope, EXCLUDED.customer_scope)
+  `;
+}
+
 /**
  * Phase 4 forward-compat — not used in Phase 3 (the conversations-webhook
  * route was removed; no customer-side messages flow into a Twilio Conversation

@@ -7,8 +7,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { handleWebhook } from '@/pp-client/index';
 import type { DeploymentConfig } from '@/pp-client/types';
-import { register as registerTwilioBridge } from '@/adapters/bridge/human/twilio-flex';
-import { connieTwilioConfig } from '@/deployments/connie';
+// TTB-17 follow-up (2026-05-07): bridge subscription consolidated into
+// lib/bridge-bootstrap so multiple routes that drive bridge events (this one
+// plus app/api/intake) share a single registration surface. `register()` is
+// idempotent so re-import across routes is safe.
+import '@/lib/bridge-bootstrap';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -31,11 +34,9 @@ const defaultConfig: DeploymentConfig = {
   customFieldIds: { ticket: { customer_scope: 0, intake_source: 0 } },
 };
 
-// Phase 3: register the Twilio Flex bridge against pp-client's event dispatch.
-// Idempotent + lazy: subscribe runs once at module load (cold start). The bridge
-// only consumes events for the Connie deployment in Sprint 1.0; future
-// deployments would add their own register() call here.
-registerTwilioBridge(connieTwilioConfig);
+// Bridge registration moved to lib/bridge-bootstrap (imported above) so the
+// intake route + future routes that publish bridge events share the same
+// subscription surface across Vercel's per-route Node runtimes.
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {

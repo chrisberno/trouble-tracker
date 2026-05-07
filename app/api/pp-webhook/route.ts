@@ -7,11 +7,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { handleWebhook } from '@/pp-client/index';
 import type { DeploymentConfig } from '@/pp-client/types';
-// TTB-17 follow-up (2026-05-07): bridge subscription consolidated into
-// lib/bridge-bootstrap so multiple routes that drive bridge events (this one
-// plus app/api/intake) share a single registration surface. `register()` is
-// idempotent so re-import across routes is safe.
-import '@/lib/bridge-bootstrap';
+import { register as registerTwilioBridge } from '@/adapters/bridge/human/twilio-flex';
+import { connieTwilioConfig } from '@/deployments/connie';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -34,9 +31,14 @@ const defaultConfig: DeploymentConfig = {
   customFieldIds: { ticket: { customer_scope: 0, intake_source: 0 } },
 };
 
-// Bridge registration moved to lib/bridge-bootstrap (imported above) so the
-// intake route + future routes that publish bridge events share the same
-// subscription surface across Vercel's per-route Node runtimes.
+// TTB-17 follow-up (2026-05-07): direct module-scope register call lives in
+// each route that participates in bridge dispatch. Vercel runs each Next.js
+// API route in its own isolated Node runtime, so the handlers Map in
+// pp-client/index.ts is per-route — register() must run at module load in
+// every route that dispatches OR publishes events. Side-effect imports via a
+// shared bootstrap module were tried and tree-shaken by the bundler — direct
+// call is the safest pattern. register() itself has an idempotency guard.
+registerTwilioBridge(connieTwilioConfig);
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {

@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { handleWebFormIntake } from '@/adapters/inbound/web-form/handler';
 import { connieConfig } from '@/deployments/connie';
 import config from '@/deployments/connie/config.json';
+// TTB-17 follow-up (2026-05-07): side-effect import registers the Twilio Flex
+// bridge against pp-client's event dispatch in this route's runtime. Without
+// this, the synthetic `publish(ticket.created)` from handleWebFormIntake fires
+// into an empty handler map and the bridge never runs — confirmed by CCTO-4
+// during post-merge verification of PR #18. See lib/bridge-bootstrap.ts.
+import '@/lib/bridge-bootstrap';
 
 export const runtime = 'nodejs';
 

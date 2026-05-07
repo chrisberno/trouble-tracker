@@ -67,16 +67,16 @@ export async function onTicketCreated(
     return;
   }
 
-  // TTB-1 Task 8 demo posture (2026-05-06): Phase 3 customerScope plumbing
-  // is parked as TTB-17 (PP custom_fields read-shape blocker — not solvable
-  // without Option 1 refactor or PP-side change). For now, point Pattern B
-  // ticket profile_url at agent-tools-data so the right pane shows useful
-  // staff reference content instead of duplicating the canvas Ticket tab.
-  // Voice and other task types are unaffected — they set their own
-  // profile_url via Studio Flow / different code paths.
-  // Revert this when TTB-17 lands and `?customerScope=` plumbing works
-  // end-to-end.
-  const profileUrl = 'https://connie.plus/agent-tools-data';
+  // TTB-17 disposition (Sprint 2.0, 2026-05-07): demo-posture override
+  // (`profile_url = 'https://connie.plus/agent-tools-data'`) reverted now that
+  // customerScope plumbing works end-to-end via path (a) — intake handler
+  // synthetically publishes ticket.created with the original customerScope,
+  // bridge writes it to task attributes + bridge-db. Flex Admin Active Task
+  // URL `{{task.profile_url}}` resolves back to the per-ticket detail iframe
+  // for Pattern B; the right-pane account-context list view is delivered
+  // separately via flex-config flip (PR follow-up) pointing
+  // `enhanced_crm_container.url` at `/bridge/tickets?customerScope={{task.customerScope}}`.
+  const profileUrl = `${twilio.config.iframeBaseUrl}/${ticket.id}`;
   const priorityNum = PRIORITY_TO_TASKROUTER[ticket.priority] ?? 5;
 
   // Stable proxy identity for the customer participant in the Twilio
@@ -221,6 +221,13 @@ export async function onTicketCreated(
       interactionSid: interaction.interactionSid,
       conversationSid: conv.conversationSid,
       taskSid: interaction.taskSid,
+      // TTB-17: bridge-db is source of truth for ticketId→scope. PP REST does
+      // not return custom_fields in GET /api/tickets/<id>, so the /bridge/tickets
+      // list view queries bridge-db for the scope index, then fetches each
+      // ticket via PP getTicket. ticket.customerScope reaches here populated
+      // because the intake handler synthetically publishes ticket.created with
+      // the original customerScope (path (a) in TTB-17 design).
+      customerScope: ticket.customerScope || null,
     });
 
     await markBridgeKeyProcessed(idempotencyKey);

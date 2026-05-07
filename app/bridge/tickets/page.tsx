@@ -14,10 +14,19 @@
 // Single-ticket detail view links to the existing /bridge/twilio-flex/ticket/[id]
 // page (already polished, has Reply / Status / Note buttons). No new
 // detail-view route needed.
+//
+// TTB-17 (2026-05-07): switched from `pp-client.listTickets` (PP search-based,
+// which only matches subject/description text) to `bridge-db.listTicketIdsByScope`
+// + per-ticket `getTicket` fetch. PP REST does not return custom_fields in
+// GET /api/tickets/<id> at any shape (verified 2026-05-06 with TT tenant token),
+// AND PP search misses tickets where the scope value isn't in subject/description.
+// Bridge-db is the source of truth for ticketId→scope mapping; PP is the source
+// of truth for ticket content.
 
 import Link from 'next/link';
-import { listTickets } from '@/pp-client';
+import { getTicket } from '@/pp-client';
 import type { Ticket } from '@/pp-client';
+import { listTicketIdsByScope } from '@/adapters/bridge/human/twilio-flex/bridge-db';
 import { connieConfig } from '@/deployments/connie';
 import config from '@/deployments/connie/config.json';
 
@@ -71,10 +80,38 @@ export default async function TicketsListPage({
   let tickets: Ticket[] = [];
   let error: string | null = null;
   try {
-    tickets = await listTickets(
-      { customerScope, status: statusFilter, limit: DEFAULT_LIMIT },
-      connieConfig,
-    );
+    if (!customerScope) {
+      // No scope = no list. PP doesn't expose a verified all-tickets endpoint
+      // and bridge-db is keyed on scope. Render the empty state cleanly.
+      tickets = [];
+    } else {
+      // Bridge-db owns the ticketId→scope index (TTB-17). Fetch IDs first,
+      // then hydrate each from PP. Errors on individual fetches drop the row
+      // rather than failing the whole page.
+      const ids = await listTicketIdsByScope(customerScope, DEFAULT_LIMIT);
+      const fetched = await Promise.all(
+        ids.map(async (id) => {
+          try {
+            return await getTicket(id, connieConfig);
+          } catch (fetchErr) {
+            console.warn(
+              JSON.stringify({
+                bridge_tickets_page: true,
+                warning: 'getTicket failed; row dropped',
+                ticketId: id,
+                error: fetchErr instanceof Error ? fetchErr.message : String(fetchErr),
+              }),
+            );
+            return null;
+          }
+        }),
+      );
+      tickets = fetched.filter((t): t is Ticket => t !== null);
+      if (statusFilter) {
+        tickets = tickets.filter((t) => t.status === statusFilter);
+      }
+      tickets.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    }
   } catch (err) {
     error = err instanceof Error ? err.message : 'Failed to load tickets';
   }

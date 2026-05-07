@@ -12,6 +12,12 @@ import { connieTwilioConfig } from '@/deployments/connie';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+// TTB-17 fix #6: bridge handler's race-loss backfill path (final bridge-db
+// read + 2 Twilio attribute updates) plus the original Pattern B chain
+// (5 Twilio API creates) plus cold-start can push past Vercel's default 10s
+// function timeout. Explicit 30s ceiling gives backfill room to run; well
+// under any plan's hard cap.
+export const maxDuration = 30;
 
 // Webhook receiver config: tenant URL + token come from env vars set by
 // the deployment owner. No literal upstream domains live in this file.

@@ -85,16 +85,14 @@ export async function onTicketCreated(
   //   2. event.ticket.customerScope (in-process synthetic-publish fast-path —
   //      currently always empty in production due to bundler/runtime quirk)
   //   3. '' (no scope binding — degrades to "Unknown" in UI)
-  let prewrittenMapping = await getBridgeMappingByTicketId(ticket.id);
-  let scopeRetries = 0;
-  if (!prewrittenMapping?.customerScope?.trim()) {
-    for (let i = 0; i < 8; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      prewrittenMapping = await getBridgeMappingByTicketId(ticket.id);
-      scopeRetries++;
-      if (prewrittenMapping?.customerScope?.trim()) break;
-    }
-  }
+  // TTB-17 fix #6: dropped retry-on-empty (PR #22) — observation showed it
+  // didn't reliably catch intake's prewrite within 2s (CCTO-4 verified on #43,
+  // #45). Cause is irrelevant; we don't race against replica lag any more. We
+  // accept that the first read may miss, create Twilio resources with the
+  // best-known scope (often empty), and let the backfill block at the end
+  // recover via attribute UPDATE calls. Backfill is bundler-agnostic and
+  // race-deterministic.
+  const prewrittenMapping = await getBridgeMappingByTicketId(ticket.id);
   const effectiveScope =
     (prewrittenMapping?.customerScope && prewrittenMapping.customerScope.trim()) ||
     (ticket.customerScope && ticket.customerScope.trim()) ||
@@ -107,7 +105,6 @@ export async function onTicketCreated(
     eventScope: ticket.customerScope || '',
     prewrittenScope: prewrittenMapping?.customerScope || '',
     effectiveScope,
-    scopeRetries,
   }));
 
   // TTB-17 disposition (Sprint 2.0, 2026-05-07): demo-posture override

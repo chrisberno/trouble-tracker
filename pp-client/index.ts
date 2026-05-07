@@ -45,6 +45,34 @@ export function subscribe(events: CoreEvent['kind'][], handler: EventHandler): v
   }
 }
 
+// TTB-17: synchronous in-process publish to subscribers. Used by the intake
+// handler to drive the bridge directly with the original customerScope from
+// the request body, bypassing the PP webhook roundtrip (PP REST does not
+// return custom_fields, so reading customerScope back from PP yields empty).
+//
+// The PP webhook still fires for the same ticket.created event; bridge-side
+// idempotency on `twilio:task:<ticket.id>` makes the second invocation a no-op.
+//
+// Errors in handlers are logged but do not propagate — the intake response
+// to the customer should not depend on bridge-side success.
+export async function publish(event: CoreEvent): Promise<void> {
+  const subscribers = handlers.get(event.kind) ?? [];
+  for (const handler of subscribers) {
+    try {
+      await handler(event);
+    } catch (err) {
+      console.error(
+        JSON.stringify({
+          pp_publish: true,
+          error: 'handler threw',
+          kind: event.kind,
+          message: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    }
+  }
+}
+
 // Phase 1 test handler — proves dispatch path works end-to-end.
 // Phase 3 will replace this with the real bridge handler.
 subscribe(

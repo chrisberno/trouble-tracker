@@ -1,4 +1,4 @@
-import { createTicket } from '@/pp-client/index';
+import { createTicket, publish } from '@/pp-client/index';
 import type { DeploymentConfig } from '@/pp-client/types';
 import {
   PpClientServerError,
@@ -76,6 +76,36 @@ export async function handleWebFormIntake(
         ticketId: ticket.id,
       }),
     );
+
+    // TTB-17: synthetic publish of ticket.created with the original
+    // customerScope from the request body. PP REST does not return
+    // custom_fields, so the normalized ticket returned by createTicket has an
+    // empty customerScope (verified 2026-05-06 with TT tenant token). The PP
+    // ticket.created webhook will fire shortly after this and re-publish the
+    // same event, but bridge-side idempotency on `twilio:task:<ticket.id>`
+    // makes the second invocation a no-op. We synthesize here with
+    // customerScope overridden to the original input so the bridge gets the
+    // value it needs to populate task.attributes.customerScope and bridge-db
+    // customer_scope index.
+    try {
+      await publish({
+        kind: 'ticket.created',
+        ticket: { ...ticket, customerScope },
+      });
+    } catch (publishErr) {
+      // Bridge errors don't fail the intake response — the customer-facing
+      // submit succeeded; bridge fan-out is best-effort. The PP webhook is the
+      // safety net.
+      console.warn(
+        JSON.stringify({
+          web_form_intake: true,
+          warning: 'synthetic publish failed; PP webhook is fallback',
+          ticketId: ticket.id,
+          error: publishErr instanceof Error ? publishErr.message : String(publishErr),
+        }),
+      );
+    }
+
     return { status: 'success', ticketId: ticket.id };
   } catch (err) {
     if (

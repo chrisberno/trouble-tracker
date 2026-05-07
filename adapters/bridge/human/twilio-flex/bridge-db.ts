@@ -31,6 +31,7 @@ export interface BridgeMapping {
   interactionSid: string | null;       // Phase 4 forward-compat; null in Phase 3
   conversationSid: string | null;      // Phase 4 forward-compat; null in Phase 3
   taskSid: string;                     // Phase 3 required
+  customerScope: string | null;        // TTB-17: bridge-db is the source of truth for ticketId→scope; PP REST API does not return custom_fields in GET /api/tickets/<id> at any shape (verified 2026-05-06).
   createdAt: string;
 }
 
@@ -41,6 +42,7 @@ export async function initBridgeMappingTable(): Promise<void> {
       interaction_sid TEXT,
       conversation_sid TEXT,
       task_sid TEXT NOT NULL,
+      customer_scope TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `;
@@ -50,6 +52,10 @@ export async function initBridgeMappingTable(): Promise<void> {
   // column is already nullable).
   await sql`ALTER TABLE twilio_bridge_mappings ALTER COLUMN interaction_sid DROP NOT NULL`;
   await sql`ALTER TABLE twilio_bridge_mappings ALTER COLUMN conversation_sid DROP NOT NULL`;
+  // TTB-17 schema migration: add customer_scope column on prior installs that
+  // pre-date the column. ADD COLUMN IF NOT EXISTS is idempotent; existing rows
+  // get NULL until a subsequent ticket-update writes the value.
+  await sql`ALTER TABLE twilio_bridge_mappings ADD COLUMN IF NOT EXISTS customer_scope TEXT`;
   await sql`
     CREATE INDEX IF NOT EXISTS twilio_bridge_mappings_conversation_sid_idx
     ON twilio_bridge_mappings(conversation_sid)
@@ -58,6 +64,10 @@ export async function initBridgeMappingTable(): Promise<void> {
     CREATE INDEX IF NOT EXISTS twilio_bridge_mappings_task_sid_idx
     ON twilio_bridge_mappings(task_sid)
   `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS twilio_bridge_mappings_customer_scope_idx
+    ON twilio_bridge_mappings(customer_scope)
+  `;
 }
 
 export async function upsertBridgeMapping(
@@ -65,12 +75,13 @@ export async function upsertBridgeMapping(
 ): Promise<void> {
   await initBridgeMappingTable();
   await sql`
-    INSERT INTO twilio_bridge_mappings (ticket_id, interaction_sid, conversation_sid, task_sid)
-    VALUES (${mapping.ticketId}, ${mapping.interactionSid}, ${mapping.conversationSid}, ${mapping.taskSid})
+    INSERT INTO twilio_bridge_mappings (ticket_id, interaction_sid, conversation_sid, task_sid, customer_scope)
+    VALUES (${mapping.ticketId}, ${mapping.interactionSid}, ${mapping.conversationSid}, ${mapping.taskSid}, ${mapping.customerScope})
     ON CONFLICT (ticket_id) DO UPDATE SET
       interaction_sid = COALESCE(EXCLUDED.interaction_sid, twilio_bridge_mappings.interaction_sid),
       conversation_sid = COALESCE(EXCLUDED.conversation_sid, twilio_bridge_mappings.conversation_sid),
-      task_sid = EXCLUDED.task_sid
+      task_sid = EXCLUDED.task_sid,
+      customer_scope = COALESCE(EXCLUDED.customer_scope, twilio_bridge_mappings.customer_scope)
   `;
 }
 
@@ -79,7 +90,7 @@ export async function getBridgeMappingByTicketId(
 ): Promise<BridgeMapping | null> {
   await initBridgeMappingTable();
   const result = await sql`
-    SELECT ticket_id, interaction_sid, conversation_sid, task_sid, created_at
+    SELECT ticket_id, interaction_sid, conversation_sid, task_sid, customer_scope, created_at
     FROM twilio_bridge_mappings
     WHERE ticket_id = ${ticketId}
     LIMIT 1
@@ -91,8 +102,28 @@ export async function getBridgeMappingByTicketId(
     interactionSid: (row.interaction_sid as string | null) ?? null,
     conversationSid: (row.conversation_sid as string | null) ?? null,
     taskSid: row.task_sid as string,
+    customerScope: (row.customer_scope as string | null) ?? null,
     createdAt: (row.created_at as Date | string).toString(),
   };
+}
+
+// TTB-17: list ticketIds bound to a scope. Source of truth for the
+// /bridge/tickets account-context view — PP REST does not return custom_fields,
+// so we cannot reliably ask PP "which tickets are NSS." Bridge-db owns this
+// index.
+export async function listTicketIdsByScope(
+  scope: string,
+  limit = 100,
+): Promise<string[]> {
+  await initBridgeMappingTable();
+  const result = await sql`
+    SELECT ticket_id
+    FROM twilio_bridge_mappings
+    WHERE customer_scope = ${scope}
+    ORDER BY created_at DESC
+    LIMIT ${limit}
+  `;
+  return result.rows.map((r) => r.ticket_id as string);
 }
 
 /**
@@ -105,7 +136,7 @@ export async function getBridgeMappingByConversationSid(
 ): Promise<BridgeMapping | null> {
   await initBridgeMappingTable();
   const result = await sql`
-    SELECT ticket_id, interaction_sid, conversation_sid, task_sid, created_at
+    SELECT ticket_id, interaction_sid, conversation_sid, task_sid, customer_scope, created_at
     FROM twilio_bridge_mappings
     WHERE conversation_sid = ${conversationSid}
     LIMIT 1
@@ -117,6 +148,7 @@ export async function getBridgeMappingByConversationSid(
     interactionSid: (row.interaction_sid as string | null) ?? null,
     conversationSid: (row.conversation_sid as string | null) ?? null,
     taskSid: row.task_sid as string,
+    customerScope: (row.customer_scope as string | null) ?? null,
     createdAt: (row.created_at as Date | string).toString(),
   };
 }

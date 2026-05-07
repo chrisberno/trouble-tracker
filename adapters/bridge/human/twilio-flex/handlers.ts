@@ -107,16 +107,23 @@ export async function onTicketCreated(
     effectiveScope,
   }));
 
-  // TTB-17 disposition (Sprint 2.0, 2026-05-07): demo-posture override
-  // (`profile_url = 'https://connie.plus/agent-tools-data'`) reverted now that
-  // customerScope plumbing works end-to-end via path (a) — intake handler
-  // synthetically publishes ticket.created with the original customerScope,
-  // bridge writes it to task attributes + bridge-db. Flex Admin Active Task
-  // URL `{{task.profile_url}}` resolves back to the per-ticket detail iframe
-  // for Pattern B; the right-pane account-context list view is delivered
-  // separately via flex-config flip (PR follow-up) pointing
-  // `enhanced_crm_container.url` at `/bridge/tickets?customerScope={{task.customerScope}}`.
-  const profileUrl = `${twilio.config.iframeBaseUrl}/${ticket.id}`;
+  // TTB-17 fix #8 (Sprint 2.0, 2026-05-07): point Pattern B `profile_url` at
+  // the scope-list page resolved by ticketId. CCTO-4 caught a real blast-
+  // radius issue: flipping the GLOBAL Flex Admin Active Task URL to
+  // `?ticketId={{task.ticketId}}` would break voice/email/legacy tasks (their
+  // ticketId is empty/missing → "All scopes / No tickets" right pane =
+  // regression). Solution: keep Flex Admin URL as `{{task.profile_url}}` and
+  // have the bridge handler set per-Pattern-B-task profile_url here. Voice
+  // tasks set their own profile_url via Studio Flow; other task types via
+  // their own bridges. Each task type carries its own URL.
+  //
+  // Canvas Ticket tab (basecamp plugin) is unaffected — it builds its own
+  // URL via getBridgeBaseUrl() + /bridge/twilio-flex/ticket/${ticketId}, not
+  // task.profile_url.
+  //
+  // task.attributes.customerScope being empty is now cosmetic-only — the page
+  // reads scope from bridge-db using ticketId from the URL param.
+  const profileUrl = `https://trouble-ticket-app.vercel.app/bridge/tickets?ticketId=${ticket.id}`;
   const priorityNum = PRIORITY_TO_TASKROUTER[ticket.priority] ?? 5;
 
   // Stable proxy identity for the customer participant in the Twilio

@@ -73,14 +73,33 @@ export function register(deployment: DeploymentConfig): void {
 // payload + REST omit custom_fields. We attach scope here so email tags
 // include `scope-NSS` etc. — useful for Mailgun-side filtering, not strictly
 // required for delivery.
+//
+// TTB-22: bounded retry-on-empty. The intake handler pre-writes the scope to
+// bridge-db AFTER createTicket returns; PP fires its ticket.created webhook in
+// parallel, and on the rare path where the webhook arrives before the prewrite
+// lands, bridge-db reads return null. Subscriber order already places this
+// adapter after the Twilio bridge handler (~5-15s of Twilio API work), so most
+// races are resolved by the time we read. Retry covers pathological tails
+// (slow Postgres writes, parallel-connection contention, direct-PP-API ticket
+// creation that never invokes intake prewrite — that last case stays null
+// regardless and degrades to scope-unknown). Cosmetic — Mailgun analytics tag
+// accuracy only.
 async function enrichScopeFromBridgeDb(ticket: Ticket): Promise<Ticket> {
   if (ticket.customerScope) return ticket;
-  try {
-    const mapping = await getBridgeMappingByTicketId(ticket.id);
-    const scope = mapping?.customerScope?.trim();
-    if (scope) return { ...ticket, customerScope: scope };
-  } catch {
-    // Non-fatal — fall through with scope ''.
+
+  const MAX_ATTEMPTS = 4;
+  const INTERVAL_MS = 200;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    try {
+      const mapping = await getBridgeMappingByTicketId(ticket.id);
+      const scope = mapping?.customerScope?.trim();
+      if (scope) return { ...ticket, customerScope: scope };
+    } catch {
+      // Non-fatal — fall through with scope ''.
+    }
+    if (attempt < MAX_ATTEMPTS - 1) {
+      await new Promise((resolve) => setTimeout(resolve, INTERVAL_MS));
+    }
   }
   return ticket;
 }

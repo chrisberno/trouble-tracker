@@ -37,6 +37,12 @@ export interface Reply {
   authorKind: 'customer' | 'agent' | 'system';
   authorIdentifier?: string;  // email or staff ID
   source?: string;         // opaque bridge metadata — presence = agent, absence = customer
+  // TTB-24 (Sprint 2.0 reopen, 2026-05-08): internal-note flag from Perfex.
+  // Webhook payload typically carries `admin: '0'` (visible reply) vs `admin: '1'`
+  // (internal note); event-mapper.ts checks several candidate field names
+  // because Perfex's API surface is under-documented and varies by release.
+  // Customer-email subscriber MUST skip when this is true (acceptance gate #6).
+  internalNote?: boolean;
   createdAt: string;
 }
 

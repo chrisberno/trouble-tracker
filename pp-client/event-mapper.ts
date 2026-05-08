@@ -65,7 +65,7 @@ export function mapWebhookPayload(
       // 1. Prefer source on data.reply.source or data.source if bridge includes it.
       // 2. Fall back to staffid presence as agent signal.
       // 3. Otherwise, customer.
-      const replyData = (data.reply ?? {}) as {
+      const replyData = (data.reply ?? {}) as Record<string, unknown> & {
         source?: string;
         staffid?: string | number;
         message?: string;
@@ -76,6 +76,42 @@ export function mapWebhookPayload(
       const sourceFromPayload =
         (replyData.source as string | undefined) ?? (data.source as string | undefined);
       const staffid = replyData.staffid;
+
+      // TTB-24 (Sprint 2.0, 2026-05-08): internal-note discriminator. Perfex's
+      // webhook payload carries the public/internal flag under a name that
+      // varies by release / addon — common candidates: `admin`, `isadmin`,
+      // `is_admin`, `isinternal`, `is_internal`, `internal_note`. We probe all
+      // and treat any "1" / 1 / true value as internal. Also emit a one-line
+      // log of the keys present in replyData so future agents can pin the
+      // exact field name from production traffic.
+      const internalCandidates = [
+        'admin',
+        'isadmin',
+        'is_admin',
+        'isinternal',
+        'is_internal',
+        'internal_note',
+        'internalnote',
+      ];
+      const internalNote = internalCandidates.some((k) => {
+        const v = (replyData as Record<string, unknown>)[k];
+        return v === '1' || v === 1 || v === true || v === 'true';
+      });
+      console.log(JSON.stringify({
+        pp_event_mapper: true,
+        info: 'replyData-keys',
+        ticketId,
+        replyId,
+        keys: Object.keys(replyData),
+        internalNote,
+        // Echo the candidate fields' values for forensic diff against future
+        // payloads — useful if Perfex adds another flag we haven't seen.
+        candidateValues: Object.fromEntries(
+          internalCandidates
+            .filter((k) => Object.prototype.hasOwnProperty.call(replyData, k))
+            .map((k) => [k, (replyData as Record<string, unknown>)[k]]),
+        ),
+      }));
 
       const rawBody = replyData.message ?? replyData.description ?? replyData.body ?? '';
       const stripped = stripHtml(String(rawBody));
@@ -93,6 +129,7 @@ export function mapWebhookPayload(
       );
       baseReply.body = stripped;
       baseReply.bodyRaw = String(rawBody);
+      baseReply.internalNote = internalNote;
 
       // Discrimination logic (presence/absence only — never compare source strings)
       let kind: 'ticket.replied.agent' | 'ticket.replied.customer';

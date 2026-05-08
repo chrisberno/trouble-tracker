@@ -8,7 +8,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { handleWebhook } from '@/pp-client/index';
 import type { DeploymentConfig } from '@/pp-client/types';
 import { register as registerTwilioBridge } from '@/adapters/bridge/human/twilio-flex';
-import { connieTwilioConfig } from '@/deployments/connie';
+import { register as registerCustomerEmails } from '@/adapters/outbound/customer-email/register';
+import { connieTwilioConfig, connieConfig } from '@/deployments/connie';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -45,6 +46,13 @@ const defaultConfig: DeploymentConfig = {
 // shared bootstrap module were tried and tree-shaken by the bundler — direct
 // call is the safest pattern. register() itself has an idempotency guard.
 registerTwilioBridge(connieTwilioConfig);
+
+// Sprint 2.0 Co-headline 2 (2026-05-08): customer-email outbound. Subscribes
+// to ticket.created + ticket.replied.agent and sends Connie-branded emails
+// to the submitter via Mailgun direct API. See
+// adapters/outbound/customer-email/ for the adapter. Independent of the
+// Twilio Flex bridge — failures in one don't affect the other.
+registerCustomerEmails(connieConfig);
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {

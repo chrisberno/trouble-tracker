@@ -42,9 +42,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       return withCors(request, NextResponse.json({ error: 'body required' }, { status: 400 }));
     }
 
+    // TTB-24: use sourceInternal so PP webhook echoes a discriminator the
+    // event-mapper can use to set Reply.internalNote=true. PP doesn't include
+    // the isinternal flag in webhook payloads; encoding it into source is the
+    // working channel.
     const reply = await addReply(
       ticketId,
-      { body: noteBody, isInternal: true, source: BRIDGE_METADATA.source },
+      { body: noteBody, isInternal: true, source: BRIDGE_METADATA.sourceInternal },
       connieConfig,
     );
 

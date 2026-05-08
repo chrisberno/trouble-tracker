@@ -43,15 +43,24 @@ export async function sendAgentReplyEmail(args: {
 }): Promise<void> {
   const { ticket, reply } = args;
 
-  // Acceptance gate #6 — never email customer for internal notes.
-  // The Reply type doesn't currently carry an isInternal flag (event-mapper
-  // doesn't extract it from the PP webhook payload). Until that's plumbed
-  // through, we use a defensive heuristic: only send if the reply has a
-  // non-empty body AND authorKind === 'agent'. If smoke testing reveals
-  // internal notes also fire ticket.replied.agent and leak through, file a
-  // follow-up to extend pp-client/event-mapper.ts to extract Perfex's
-  // internal-note flag (likely `data.reply.admin` or similar) and either
-  // filter at the mapper layer or expose `reply.isInternal` here.
+  // TTB-24 (Sprint 2.0 reopen, 2026-05-08): acceptance gate #6 fix.
+  // Original defensive filter (`authorKind === 'agent'` + non-empty body)
+  // was structurally insufficient — internal notes are also agent-authored
+  // and have non-empty bodies. CCTO-4 + CEO smoke on ticket #65 (replyId 34)
+  // confirmed leak. Fix: pp-client/event-mapper now extracts an
+  // `internalNote: boolean` flag from Perfex's webhook payload (probing
+  // `admin`/`isadmin`/`is_admin`/`isinternal`/`is_internal`/`internal_note`/
+  // `internalnote`). Customer-email subscriber rejects when internalNote
+  // is true.
+  if (reply.internalNote === true) {
+    console.log(JSON.stringify({
+      customer_email: true,
+      info: 'reply is internal note; skipping reply-notification (TTB-24 gate)',
+      ticketId: ticket.id,
+      replyId: reply.id,
+    }));
+    return;
+  }
   if (reply.authorKind !== 'agent') {
     console.log(JSON.stringify({
       customer_email: true,

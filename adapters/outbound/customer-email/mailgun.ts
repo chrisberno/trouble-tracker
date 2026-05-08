@@ -30,6 +30,11 @@ export interface SendEmailInput {
   replyTo?: string;            // overrides default support@connie.team
   tags?: string[];             // Mailgun-side tagging (max 3 tags per Mailgun rules)
   customVars?: Record<string, string>;
+  // TTB-25 / S3 C2: ticketId to embed in Message-Id so the customer's reply
+  // arrives with In-Reply-To pointing back at this ticket. The
+  // /api/email-inbound webhook (C2) extracts the ticket id from the In-Reply-To
+  // header as one of three resolution strategies.
+  ticketId?: string;
 }
 
 export interface SendEmailResult {
@@ -62,6 +67,19 @@ export async function sendCustomerEmail(input: SendEmailInput): Promise<SendEmai
   formData.append('text', input.textBody);
   formData.append('html', input.htmlBody);
   formData.append('h:Reply-To', input.replyTo ?? DEFAULT_REPLY_TO);
+
+  // TTB-25 / S3 C2: embed ticketId in the Message-Id header. RFC 5322 message
+  // identifiers are <local@domain>; we use ticket-<id>-<random>@<domain> so
+  // the inbound webhook can reverse-engineer the ticket from the customer's
+  // reply In-Reply-To header (most mail clients quote the original Message-Id
+  // verbatim into In-Reply-To when a user hits "Reply"). Random suffix avoids
+  // collisions across multiple emails for the same ticket (intake confirmation
+  // + agent replies + future status changes).
+  if (input.ticketId) {
+    const messageId = `ticket-${input.ticketId}-${randomToken(16)}@${MAILGUN_DOMAIN}`;
+    formData.append('h:Message-Id', `<${messageId}>`);
+  }
+
   for (const tag of input.tags ?? []) {
     formData.append('o:tag', tag);
   }
@@ -130,4 +148,12 @@ function redactEmail(email: string): string {
   const at = email.indexOf('@');
   if (at <= 0) return '***';
   return `${email[0]}***${email.slice(at)}`;
+}
+
+// Cryptographically random hex token for Message-Id local-part suffix. Edge
+// runtime + Node both support crypto.randomBytes via the Web Crypto API.
+function randomToken(bytes: number): string {
+  const arr = new Uint8Array(bytes);
+  crypto.getRandomValues(arr);
+  return Array.from(arr).map((b) => b.toString(16).padStart(2, '0')).join('');
 }

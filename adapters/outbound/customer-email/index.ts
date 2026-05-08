@@ -34,6 +34,7 @@ export async function sendTicketCreatedEmail(ticket: Ticket): Promise<void> {
     htmlBody: tmpl.htmlBody,
     tags: ['ticket-created', `scope-${ticket.customerScope || 'unknown'}`],
     customVars: { ticketId: ticket.id, eventKind: 'ticket.created' },
+    ticketId: ticket.id,
   });
 }
 
@@ -100,6 +101,7 @@ export async function sendAgentReplyEmail(args: {
       replyId: reply.id,
       eventKind: 'ticket.replied.agent',
     },
+    ticketId: ticket.id,
   });
 }
 

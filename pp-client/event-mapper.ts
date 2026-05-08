@@ -92,8 +92,12 @@ export function mapWebhookPayload(
       // internal notes (see adapters/bridge/human/twilio-flex/types.ts
       // BRIDGE_METADATA + app/api/bridge/twilio-flex/internal-note/route.ts).
       // event-mapper substring-matches 'internal' in source to set the flag.
-      // Defensive: also retain the candidate-field probe in case a future PP
-      // addon starts populating these — log the keys+candidates so we see it.
+      // Defensive: retain the candidate-field probe in case a future PP addon
+      // starts populating these. If PP webhook payload shape changes, the
+      // probe will set internalNote=true even before we update the source-tag
+      // discriminator. Per S3 B3 (TTB-14 cleanup), the per-reply diagnostic
+      // emit was removed as production noise — re-add a console.log here only
+      // if a regression investigation needs the keys+values dump.
       const internalCandidates = [
         'admin',
         'isadmin',
@@ -110,22 +114,6 @@ export function mapWebhookPayload(
       const internalFromSource = typeof sourceFromPayload === 'string'
         && sourceFromPayload.toLowerCase().includes('internal');
       const internalNote = internalFromSource || internalFromCandidates;
-      console.log(JSON.stringify({
-        pp_event_mapper: true,
-        info: 'replyData-keys',
-        ticketId,
-        replyId,
-        keys: Object.keys(replyData),
-        internalNote,
-        internalFromSource,
-        internalFromCandidates,
-        sourceFromPayload: sourceFromPayload ?? null,
-        candidateValues: Object.fromEntries(
-          internalCandidates
-            .filter((k) => Object.prototype.hasOwnProperty.call(replyData, k))
-            .map((k) => [k, (replyData as Record<string, unknown>)[k]]),
-        ),
-      }));
 
       const rawBody = replyData.message ?? replyData.description ?? replyData.body ?? '';
       const stripped = stripHtml(String(rawBody));

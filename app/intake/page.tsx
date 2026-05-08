@@ -37,12 +37,29 @@ export default function IntakePage() {
   // /api/intake can override its referer-based rule when the upstream knows
   // which child Flex domain spawned this intake.
   const [customerScope, setCustomerScope] = useState<string | null>(null);
+  // TTB-19 / S3 B2.4: prefill_name + prefill_email arrive on the URL when
+  // connie.plus's broker (B2.3) detects worker.full_name / worker.email from
+  // the Flex template injection (basecamp display_url_when_no_tasks, B2.2).
+  // Captured here on mount so resetForm can re-apply them after a successful
+  // submit (agent files multiple tickets without retyping identity).
+  const [prefill, setPrefill] = useState<{ name?: string; email?: string }>({});
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const param = new URL(window.location.href).searchParams.get("customerScope");
-    if (param && ALLOWED_CUSTOMER_SCOPES.has(param)) {
-      setCustomerScope(param);
+    const params = new URL(window.location.href).searchParams;
+    const scopeParam = params.get("customerScope");
+    if (scopeParam && ALLOWED_CUSTOMER_SCOPES.has(scopeParam)) {
+      setCustomerScope(scopeParam);
+    }
+    const prefillName = params.get("prefill_name") ?? undefined;
+    const prefillEmail = params.get("prefill_email") ?? undefined;
+    if (prefillName || prefillEmail) {
+      setPrefill({ name: prefillName, email: prefillEmail });
+      setFormData((prev) => ({
+        ...prev,
+        customerName: prefillName ?? prev.customerName,
+        customerEmail: prefillEmail ?? prev.customerEmail,
+      }));
     }
   }, []);
 
@@ -51,7 +68,11 @@ export default function IntakePage() {
   };
 
   const resetForm = () => {
-    setFormData(EMPTY_FORM);
+    setFormData({
+      ...EMPTY_FORM,
+      customerName: prefill.name ?? "",
+      customerEmail: prefill.email ?? "",
+    });
     setSubmitState("idle");
     setTicketId(null);
     setErrorMessage(null);

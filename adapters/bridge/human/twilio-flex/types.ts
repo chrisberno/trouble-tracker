@@ -19,10 +19,20 @@ export interface TwilioBridgeConfig {
 
 // Bridge-level metadata declared per Manifesto v2.2 Bridge Contract.
 // Consumed by upstream tooling (registries, dashboards) and self-documenting.
+//
+// TTB-24 (Sprint 2.0 reopen, 2026-05-08): added `sourceInternal` for the
+// internal-note path. PP webhook payload doesn't include the isinternal flag
+// in `data.reply` (verified: `admin: null` for both internal + public; no
+// `isinternal` key in keys list). The `source` field IS echoed back, so we
+// encode the internal vs public distinction into the source value itself.
+// `source: 'flex-internal'` for internal notes; `source: 'flex'` for
+// customer-visible replies. event-mapper.ts uses substring match on
+// 'internal' to set Reply.internalNote.
 export const BRIDGE_METADATA = {
   resolverType: 'human' as const,
   iframeUrlPattern: '/bridge/twilio-flex/ticket/{id}',
-  source: 'flex' as const,           // opaque source-tag for loop prevention
+  source: 'flex' as const,                    // canvas-driven public reply
+  sourceInternal: 'flex-internal' as const,   // canvas-driven internal note
 } as const;
 
-export type BridgeSource = typeof BRIDGE_METADATA.source;
+export type BridgeSource = typeof BRIDGE_METADATA.source | typeof BRIDGE_METADATA.sourceInternal;

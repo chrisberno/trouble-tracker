@@ -77,13 +77,23 @@ export function mapWebhookPayload(
         (replyData.source as string | undefined) ?? (data.source as string | undefined);
       const staffid = replyData.staffid;
 
-      // TTB-24 (Sprint 2.0, 2026-05-08): internal-note discriminator. Perfex's
-      // webhook payload carries the public/internal flag under a name that
-      // varies by release / addon — common candidates: `admin`, `isadmin`,
-      // `is_admin`, `isinternal`, `is_internal`, `internal_note`. We probe all
-      // and treat any "1" / 1 / true value as internal. Also emit a one-line
-      // log of the keys present in replyData so future agents can pin the
-      // exact field name from production traffic.
+      // TTB-24 (Sprint 2.0 reopen, 2026-05-08): internal-note discriminator.
+      // Perfex's webhook payload does NOT include the isinternal flag in
+      // data.reply — verified via production observation on ticket #66:
+      // keys = ["id","ticketid","userid","contactid","name","email","date",
+      // "message","attachment","admin","source"]. `admin` is null for both
+      // internal AND customer-visible replies posted via API/canvas (only
+      // populated when posted through staff UI, apparently). NO `isinternal`,
+      // `is_admin`, etc. fields exist.
+      //
+      // Working channel: PP DOES echo the X-PP-Source header back as
+      // data.reply.source. Bridge encodes internal vs public into the source
+      // value itself — `flex` for customer-visible, `flex-internal` for
+      // internal notes (see adapters/bridge/human/twilio-flex/types.ts
+      // BRIDGE_METADATA + app/api/bridge/twilio-flex/internal-note/route.ts).
+      // event-mapper substring-matches 'internal' in source to set the flag.
+      // Defensive: also retain the candidate-field probe in case a future PP
+      // addon starts populating these — log the keys+candidates so we see it.
       const internalCandidates = [
         'admin',
         'isadmin',
@@ -93,10 +103,13 @@ export function mapWebhookPayload(
         'internal_note',
         'internalnote',
       ];
-      const internalNote = internalCandidates.some((k) => {
+      const internalFromCandidates = internalCandidates.some((k) => {
         const v = (replyData as Record<string, unknown>)[k];
         return v === '1' || v === 1 || v === true || v === 'true';
       });
+      const internalFromSource = typeof sourceFromPayload === 'string'
+        && sourceFromPayload.toLowerCase().includes('internal');
+      const internalNote = internalFromSource || internalFromCandidates;
       console.log(JSON.stringify({
         pp_event_mapper: true,
         info: 'replyData-keys',
@@ -104,8 +117,9 @@ export function mapWebhookPayload(
         replyId,
         keys: Object.keys(replyData),
         internalNote,
-        // Echo the candidate fields' values for forensic diff against future
-        // payloads — useful if Perfex adds another flag we haven't seen.
+        internalFromSource,
+        internalFromCandidates,
+        sourceFromPayload: sourceFromPayload ?? null,
         candidateValues: Object.fromEntries(
           internalCandidates
             .filter((k) => Object.prototype.hasOwnProperty.call(replyData, k))

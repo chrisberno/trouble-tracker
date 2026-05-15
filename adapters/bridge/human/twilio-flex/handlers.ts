@@ -37,8 +37,7 @@ import type { CoreEvent } from '@/pp-client/types';
 import type { TwilioClient } from './twilio-client';
 import {
   upsertBridgeMapping,
-  isBridgeKeyProcessed,
-  markBridgeKeyProcessed,
+  tryClaimBridgeKey,
   getBridgeMappingByTicketId,
 } from './bridge-db';
 
@@ -57,7 +56,14 @@ export async function onTicketCreated(
   const ticket = event.ticket;
   const idempotencyKey = `twilio:task:${ticket.id}`;
 
-  if (await isBridgeKeyProcessed(idempotencyKey)) {
+  // Atomic claim — INSERT ... ON CONFLICT DO NOTHING RETURNING. Closes the
+  // race window between /api/intake's after()-dispatched run and PP's
+  // ticket.created webhook backstop (~5-10s later) that could otherwise
+  // both enter Pattern B and create duplicate Twilio resources. Pre-PR
+  // check+mark was non-atomic with mark-at-exit, leaving a 700-1500ms
+  // race window equal to Pattern B duration. See bridge-db.ts tryClaimBridgeKey
+  // for the doctrine.
+  if (!(await tryClaimBridgeKey(idempotencyKey))) {
     console.log(JSON.stringify({
       bridge: 'twilio-flex',
       handler: 'onTicketCreated',
@@ -93,10 +99,22 @@ export async function onTicketCreated(
   //
   // PP's ticket.created webhook fires ~5-10s later as the
   // eventual-consistency backstop. This handler re-enters with the SAME
-  // ticketId → SAME idempotency key (`twilio:task:<ticketId>`, line
-  // ~58) → isBridgeKeyProcessed returns true → short-circuit. Verified
-  // by smoke; the "duplicate event skipped" log line is the load-bearing
-  // safety net.
+  // ticketId → SAME idempotency key (`twilio:task:<ticketId>`, line ~58)
+  // → tryClaimBridgeKey returns false (atomic check-and-claim via
+  // INSERT ... ON CONFLICT DO NOTHING RETURNING) → short-circuit. The
+  // "duplicate event skipped" log line is the load-bearing safety net
+  // verification (smoke #4 gate).
+  //
+  // Partial-failure trade-off (honest): the atomic claim is set at handler
+  // entry, before Pattern B executes. If Pattern B throws midway, the
+  // backstop will still short-circuit on the claim — so partial Twilio
+  // resources (conv created, no task) become orphans rather than getting
+  // retried. The OLD (pre-PR) non-atomic mark-at-exit design would have
+  // retried, but with no Twilio API-level idempotency token (verified
+  // twilio-client.ts:50 — keys logged, not sent in headers), retry would
+  // create DUPLICATE resources instead of recovering. Atomic-claim
+  // chooses orphans over duplicates. Proper fix is per-step Twilio
+  // idempotency headers — out of scope for this PR; follow-up backlog.
   //
   // Historical context: TTB-17 fix #3/#4 added the bridge-db prewrite to
   // handle the race; fix #6 (PR #22) dropped retry-on-empty; fix #7 (PR
@@ -300,12 +318,12 @@ export async function onTicketCreated(
     // 2026-05-15: the race-loss path that previously produced empty scope
     // on task attributes is now closed at the source via in-process
     // dispatch from /api/intake (see scope-resolution comment at the top
-    // of this handler). Backfill remains unnecessary. This idempotency
-    // mark (`twilio:task:<ticketId>`) is the load-bearing safety net for
-    // PP's subsequent webhook fire — it short-circuits the duplicate
-    // re-entry. Look for `info: 'duplicate event skipped'` in production
-    // logs to confirm the backstop fires correctly.
-    await markBridgeKeyProcessed(idempotencyKey);
+    // of this handler). Backfill remains unnecessary.
+    //
+    // No mark needed at this point — the idempotency key was claimed
+    // atomically at the TOP of the handler via tryClaimBridgeKey. PP's
+    // subsequent webhook fire will hit the claim check and short-circuit
+    // with `info: 'duplicate event skipped'` (smoke #4 verification gate).
 
     console.log(JSON.stringify({
       bridge: 'twilio-flex',

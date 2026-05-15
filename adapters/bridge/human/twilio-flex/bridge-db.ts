@@ -212,3 +212,32 @@ export async function markBridgeKeyProcessed(key: string): Promise<void> {
     ON CONFLICT (key) DO NOTHING
   `;
 }
+
+// Atomic "claim if not processed" — returns true on first claim, false if
+// another runtime already claimed it. Use INSTEAD of the isBridgeKeyProcessed
+// + markBridgeKeyProcessed pair when two runtimes can race the same key.
+//
+// Why this exists (2026-05-15): the post-#93 race-fix PR added in-process
+// bridge dispatch from /api/intake; PP's ticket.created webhook still fires
+// as a backstop ~5-10s later. The original check+mark pair (read, then write
+// at end of Pattern B) had a 700-1500ms race window where both runtimes
+// could pass the check before either wrote the mark. Twilio's REST APIs are
+// called WITHOUT the I-Twilio-Idempotency-Token header (twilioFetch logs the
+// key locally but does not send it to Twilio — verified twilio-client.ts:50),
+// so the local dedup was the SOLE protection against duplicate Twilio
+// resources. Atomic claim closes the window.
+//
+// Postgres ON CONFLICT DO NOTHING + RETURNING is the canonical atomic
+// claim pattern. The row is inserted in a single statement; rowCount=1
+// means we won, rowCount=0 means another runtime got there first.
+export async function tryClaimBridgeKey(key: string): Promise<boolean> {
+  await initBridgeIdempotencyTable();
+  // GC keys older than 24h on claim.
+  await sql`DELETE FROM twilio_bridge_idempotency WHERE processed_at < NOW() - INTERVAL '24 hours'`;
+  const result = await sql`
+    INSERT INTO twilio_bridge_idempotency (key) VALUES (${key})
+    ON CONFLICT (key) DO NOTHING
+    RETURNING key
+  `;
+  return (result.rowCount ?? 0) > 0;
+}

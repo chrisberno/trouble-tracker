@@ -32,6 +32,9 @@ import {
 } from '@/adapters/bridge/human/twilio-flex/bridge-db';
 import { connieConfig } from '@/deployments/connie';
 import config from '@/deployments/connie/config.json';
+import { checkIframeOrigin } from '../_lib/iframe-gate';
+import { IframeBlocker } from '../_lib/iframe-blocker';
+import { BackButton } from '../_lib/back-button';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -73,6 +76,13 @@ export default async function TicketsListPage({
 }: {
   searchParams: Promise<SearchParamsShape>;
 }) {
+  // Iframe-only gate: reject direct-browser visits / off-allowlist origins.
+  // Dev mode bypasses (NODE_ENV check inside checkIframeOrigin).
+  const gate = await checkIframeOrigin();
+  if (!gate.allowed) {
+    return <IframeBlocker result={gate} />;
+  }
+
   const params = await searchParams;
 
   // TTB-17 fix #7 (2026-05-07, Sprint 2.0): the Flex Admin Active Task URL
@@ -150,27 +160,35 @@ export default async function TicketsListPage({
     error = err instanceof Error ? err.message : 'Failed to load tickets';
   }
 
-  const headingScope = customerScope ?? (requestedScope ? `Unknown (${requestedScope})` : 'All scopes');
+  // Defensive: when scope is missing OR fails validation, the empty-state
+  // copy below makes that explicit instead of misleadingly reading "All scopes".
+  const headingScope = customerScope
+    ?? (requestedScope ? `Unknown (${requestedScope})` : 'Not specified');
 
   return (
     <div style={{ minHeight: '100vh', padding: '20px', backgroundColor: '#f9fafb', fontFamily: 'system-ui, sans-serif' }}>
       <div style={{ maxWidth: '1100px', margin: '0 auto' }}>
+        <BackButton />
         <div style={{ marginBottom: '20px' }}>
           <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#111827', margin: 0 }}>Tickets</h1>
           <div style={{ marginTop: '6px', fontSize: '14px', color: '#4b5563' }}>
             Scope: <strong>{headingScope}</strong>
             {' · '}
             Status: <strong>{showAll ? 'all' : 'open'}</strong>
-            {' · '}
-            <Link
-              href={`/bridge/tickets?${new URLSearchParams({
-                ...(customerScope ? { customerScope } : {}),
-                ...(showAll ? {} : { status: 'all' }),
-              }).toString()}`}
-              style={{ color: '#2563eb', textDecoration: 'underline' }}
-            >
-              {showAll ? 'show open only' : 'show all statuses'}
-            </Link>
+            {customerScope && (
+              <>
+                {' · '}
+                <Link
+                  href={`/bridge/tickets?${new URLSearchParams({
+                    customerScope,
+                    ...(showAll ? {} : { status: 'all' }),
+                  }).toString()}`}
+                  style={{ color: '#2563eb', textDecoration: 'underline' }}
+                >
+                  {showAll ? 'show open only' : 'show all statuses'}
+                </Link>
+              </>
+            )}
           </div>
         </div>
 
@@ -197,7 +215,19 @@ export default async function TicketsListPage({
             border: '1px solid #e5e7eb',
             color: '#6b7280',
           }}>
-            No {showAll ? '' : 'open '}tickets{customerScope ? ` for ${customerScope}` : ''}.
+            {!customerScope ? (
+              <>
+                <strong>Scope required.</strong>{' '}
+                This page expects a <code>?customerScope=</code> parameter (NSS, HHOVV, or Lifeline).
+                {requestedScope && (
+                  <>
+                    {' '}Received: <code>{requestedScope}</code> (not recognized).
+                  </>
+                )}
+              </>
+            ) : (
+              <>No {showAll ? '' : 'open '}tickets for {customerScope}.</>
+            )}
           </div>
         ) : (
           <div style={{ backgroundColor: 'white', borderRadius: '8px', border: '1px solid #e5e7eb', overflow: 'hidden' }}>

@@ -18,6 +18,9 @@ import {
 } from '@/pp-client';
 import type { Ticket } from '@/pp-client';
 import { TicketActions } from './TicketActions';
+import { checkIframeOrigin } from '../../../_lib/iframe-gate';
+import { IframeBlocker } from '../../../_lib/iframe-blocker';
+import { BackButton } from '../../../_lib/back-button';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -67,6 +70,12 @@ function ErrorState({ title, message, ticketId }: { title: string; message: stri
 }
 
 export default async function TicketContextPage({ params }: PageProps) {
+  // Iframe-only gate (parallel to /bridge/tickets). Dev bypasses inside helper.
+  const gate = await checkIframeOrigin();
+  if (!gate.allowed) {
+    return <IframeBlocker result={gate} />;
+  }
+
   const { id: ticketId } = await params;
 
   let ticket: Ticket;
@@ -89,6 +98,13 @@ export default async function TicketContextPage({ params }: PageProps) {
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="max-w-4xl mx-auto px-4 py-6 space-y-4">
+        <BackButton
+          fallbackHref={
+            ticket.customerScope
+              ? `/bridge/tickets?customerScope=${encodeURIComponent(ticket.customerScope)}`
+              : '/bridge/tickets'
+          }
+        />
         {/* Header */}
         <div className="bg-white rounded-lg shadow p-4">
           <div className="flex items-start justify-between gap-4 mb-3">

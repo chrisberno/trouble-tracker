@@ -6,37 +6,16 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { handleWebhook } from '@/pp-client/index';
-import type { DeploymentConfig } from '@/pp-client/types';
 import { register as registerTwilioBridge } from '@/adapters/bridge/human/twilio-flex';
 import { register as registerCustomerEmails } from '@/adapters/outbound/customer-email/register';
 import { connieTwilioConfig, connieConfig } from '@/deployments/connie';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-// TTB-17 fix #6: bridge handler's race-loss backfill path (final bridge-db
-// read + 2 Twilio attribute updates) plus the original Pattern B chain
-// (5 Twilio API creates) plus cold-start can push past Vercel's default 10s
-// function timeout. Explicit 30s ceiling gives backfill room to run; well
+// Bridge handler's Pattern B chain (5 Twilio API creates) plus cold-start can
+// push past Vercel's default 10s function timeout. Explicit 30s ceiling; well
 // under any plan's hard cap.
 export const maxDuration = 30;
-
-// Webhook receiver config: tenant URL + token come from env vars set by
-// the deployment owner. No literal upstream domains live in this file.
-const defaultConfig: DeploymentConfig = {
-  tenantUrl: process.env.TROUBLETRACKER_TENANT_URL ?? '',
-  tenantApiToken: process.env.TROUBLETRACKER_TENANT_API_TOKEN ?? '',
-  customerScopeRule: () => 'unknown',
-  statusMap: {
-    open: 1,
-    in_progress: 2,
-    waiting: 4,
-    // resolved: undefined — deployment owner configures this
-    closed: 5,
-  },
-  // Webhook receiver doesn't write tickets — values are placeholders.
-  // Real ticket-write paths use deployment-specific configs (see deployments/connie/).
-  customFieldIds: { ticket: { customer_scope: 0, intake_source: 0 } },
-};
 
 // TTB-17 follow-up (2026-05-07): direct module-scope register call lives in
 // each route that participates in bridge dispatch. Vercel runs each Next.js
@@ -57,7 +36,7 @@ registerCustomerEmails(connieConfig);
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
     const rawBody = Buffer.from(await request.arrayBuffer());
-    const result = await handleWebhook(rawBody, defaultConfig);
+    const result = await handleWebhook(rawBody, connieConfig);
 
     if (result.status === 'error') {
       return NextResponse.json({ error: 'Webhook processing failed' }, { status: 400 });

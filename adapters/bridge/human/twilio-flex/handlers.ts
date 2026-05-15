@@ -68,30 +68,33 @@ export async function onTicketCreated(
     return;
   }
 
-  // TTB-17 fix #3+#4: bridge-db is authoritative for ticketId→scope. The
-  // intake handler pre-writes the scope from the original request body — but
-  // PP often fires its ticket.created webhook BEFORE intake's createTicket
-  // call returns, so this bridge handler can race ahead of the prewrite.
-  // CCTO-4 confirmed this race observationally on ticket #42: bridge ran with
-  // empty scope, prewrite landed seconds later, Twilio resources were already
-  // immutable.
-  //
-  // Fix: retry-on-empty. Read bridge-db; if scope is empty, poll up to 2s in
-  // 250ms intervals waiting for intake's prewrite to land. Total added latency
-  // only on the race-loss path; race-win path returns on first read.
+  // Scope resolution chain — TTB-17 history + 2026-05-15 update:
   //
   // Resolution order:
-  //   1. bridge-db pre-write (intake-supplied; race-tolerant via retry)
-  //   2. event.ticket.customerScope (in-process synthetic-publish fast-path —
-  //      currently always empty in production due to bundler/runtime quirk)
-  //   3. '' (no scope binding — degrades to "Unknown" in UI)
-  // TTB-17 fix #6: dropped retry-on-empty (PR #22) — observation showed it
-  // didn't reliably catch intake's prewrite within 2s (CCTO-4 verified on #43,
-  // #45). Cause is irrelevant; we don't race against replica lag any more. We
-  // accept that the first read may miss, create Twilio resources with the
-  // best-known scope (often empty), and let the backfill block at the end
-  // recover via attribute UPDATE calls. Backfill is bundler-agnostic and
-  // race-deterministic.
+  //   1. bridge-db pre-write (intake-supplied; web-form/handler.ts calls
+  //      prewriteBridgeMappingScope right after createTicket)
+  //   2. event.ticket.customerScope (parsed from PP's ticket.created webhook
+  //      payload using deployment customFieldIds; previously always empty
+  //      because the webhook receiver used a placeholder config with
+  //      customer_scope: 0 — fixed 2026-05-15 by passing connieConfig in
+  //      app/api/pp-webhook/route.ts, so this source is now reliable)
+  //   3. '' (no scope binding)
+  //
+  // Historical context: TTB-17 fix #3/#4 added the bridge-db prewrite to
+  // handle the race where PP's webhook fires before intake's prewrite lands.
+  // TTB-17 fix #6 (PR #22) dropped retry-on-empty after observation showed
+  // it didn't reliably catch the prewrite within 2s. TTB-17 fix #7 (PR #23)
+  // dropped backfill of Twilio attributes — unresolved root cause across 5
+  // fix attempts. Both retired on the assumption (correct at the time) that
+  // task.attributes.customerScope was cosmetic-only because /bridge/tickets
+  // was the sole consumer.
+  //
+  // 2026-05-15: that assumption no longer holds. basecamp commit bc88f9a7
+  // shipped SupportTicket.tsx (channel-experience feature library) which
+  // reads task.attributes.{customerScope, customers.organization, origin}
+  // for queue-line rendering in CCT WorkBench. The webhook receiver config
+  // fix above closes the race-loss gap structurally — when prewrite loses,
+  // event.ticket.customerScope now carries the real value from PP.
   const prewrittenMapping = await getBridgeMappingByTicketId(ticket.id);
   const effectiveScope =
     (prewrittenMapping?.customerScope && prewrittenMapping.customerScope.trim()) ||
@@ -121,8 +124,11 @@ export async function onTicketCreated(
   // URL via getBridgeBaseUrl() + /bridge/twilio-flex/ticket/${ticketId}, not
   // task.profile_url.
   //
-  // task.attributes.customerScope being empty is now cosmetic-only — the page
-  // reads scope from bridge-db using ticketId from the URL param.
+  // task.attributes.customerScope is LOAD-BEARING again as of 2026-05-15
+  // (basecamp bc88f9a7 SupportTicket.tsx). The /bridge/tickets page still
+  // reads from bridge-db via ticketId, but the basecamp plugin's queue-line
+  // render reads task.attributes directly. Both surfaces now have a reliable
+  // source: prewrite (bridge-db) on race-win, event payload on race-loss.
   const profileUrl = `https://trouble-ticket-app.vercel.app/bridge/tickets?ticketId=${ticket.id}`;
   const priorityNum = PRIORITY_TO_TASKROUTER[ticket.priority] ?? 5;
 
@@ -277,10 +283,14 @@ export async function onTicketCreated(
     // race-loss backfill (PR #23) never landed reliably across 5 fix attempts
     // — root cause unresolved (timeout, replica lag, log capture loss, or
     // some combination). Pivoted to a structurally cleaner approach: the
-    // /bridge/tickets page resolves scope from bridge-db via task.ticketId,
-    // which IS reliably populated. task.attributes.customerScope being empty
-    // is now cosmetic-only (basecamp Email.tsx queue rendering origin field).
-    // See app/bridge/tickets/page.tsx for the resolution path.
+    // /bridge/tickets page resolves scope from bridge-db via task.ticketId.
+    //
+    // 2026-05-15 update: race-loss is now handled at the SOURCE side instead
+    // of via backfill — the webhook receiver passes connieConfig (not the
+    // prior placeholder config with customer_scope: 0), so event.ticket
+    // .customerScope is reliably populated from PP's webhook payload. The
+    // effectiveScope resolution at the top of this handler returns the real
+    // value even when prewrite loses the race. Backfill remains unnecessary.
     await markBridgeKeyProcessed(idempotencyKey);
 
     console.log(JSON.stringify({

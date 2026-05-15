@@ -1,5 +1,5 @@
-import { createTicket, publish } from '@/pp-client/index';
-import type { DeploymentConfig } from '@/pp-client/types';
+import { createTicket } from '@/pp-client/index';
+import type { CoreEvent, DeploymentConfig } from '@/pp-client/types';
 import {
   PpClientServerError,
   PpClientRateLimitError,
@@ -21,6 +21,11 @@ export interface WebFormIntakePayload {
 export interface IntakeResult {
   status: 'success' | 'failure';
   ticketId?: string;
+  // 2026-05-15: include the constructed ticket.created CoreEvent so the
+  // route handler can dispatch the Twilio Flex bridge in-process via
+  // next/server's after(). This is the fast-path that sidesteps the
+  // PP-webhook race-loss path entirely. Present only when status='success'.
+  ticketCreatedEvent?: Extract<CoreEvent, { kind: 'ticket.created' }>;
   errorMessage?: string;
 }
 
@@ -78,22 +83,16 @@ export async function handleWebFormIntake(
       }),
     );
 
-    // TTB-17 fix #3 — pre-write scope to bridge-db BEFORE PP fires its
-    // ticket.created webhook. PP REST does not return custom_fields in
-    // GET /api/tickets/<id>, so the bridge handler can't read the scope from
-    // PP's webhook payload. By pre-writing the scope here (with the original
-    // input value, not the empty PP-roundtrip value), the bridge handler in
-    // /api/pp-webhook reads this row and uses its scope as authoritative.
-    //
-    // This sidesteps a bundler/runtime issue surfaced 2026-05-07: the
-    // synthetic in-process publish() from this route was not invoking the
-    // bridge subscriber registered in /api/intake's runtime (Vercel function
-    // logs confirmed every onTicketCreated invocation came from the
-    // /api/pp-webhook function, never from /api/intake). Whether due to
-    // tree-shake, per-route module duplication, or some other bundler quirk,
-    // forcing dependency on cross-route in-process pub/sub is fragile. The
-    // bridge-db pre-write is bundler-agnostic — both routes share the
-    // Postgres backend.
+    // TTB-17 fix #3 — pre-write scope to bridge-db.
+    // bridge-db is the source of truth for ticketId→scope across both
+    // surfaces that read it: (a) the /bridge/tickets iframe page, which
+    // resolves scope from bridge-db via ticketId URL param, and (b) the
+    // bridge handler at adapters/bridge/human/twilio-flex/handlers.ts,
+    // which reads bridge-db at the top of onTicketCreated. PP REST does
+    // not return custom_fields in GET /api/tickets/<id> (verified
+    // 2026-05-06) and PP's ticket.created webhook payload does not yield
+    // them via readCustomField either (verified 2026-05-15 — ticket #93
+    // post-9b9877b smoke).
     try {
       await prewriteBridgeMappingScope(ticket.id, customerScope);
     } catch (prewriteErr) {
@@ -107,27 +106,21 @@ export async function handleWebFormIntake(
       );
     }
 
-    // Synthetic publish kept as belt-and-suspenders. If the bundler/runtime
-    // issue gets resolved later, this provides fast-path bridge dispatch
-    // without waiting for PP's webhook round-trip. Currently a no-op in
-    // production (subscriber map empty) but harmless and self-recovering.
-    try {
-      await publish({
-        kind: 'ticket.created',
-        ticket: { ...ticket, customerScope },
-      });
-    } catch (publishErr) {
-      console.warn(
-        JSON.stringify({
-          web_form_intake: true,
-          warning: 'synthetic publish failed; PP webhook is fallback',
-          ticketId: ticket.id,
-          error: publishErr instanceof Error ? publishErr.message : String(publishErr),
-        }),
-      );
-    }
+    // 2026-05-15: pub/sub publish() removed from this handler. The 2026-05-07
+    // synthetic publish was a no-op in production due to bundler tree-shake
+    // (Vercel per-route runtime isolation — see comments at the prior
+    // publish() site in git history). Replaced by direct in-process dispatch
+    // via the route handler's next/server `after()` call, using the
+    // ticketCreatedEvent returned below. This eliminates the pp-webhook
+    // race-loss path (the bridge handler now runs with scope already known
+    // from intake, before PP's webhook fires).
 
-    return { status: 'success', ticketId: ticket.id };
+    const ticketCreatedEvent: Extract<CoreEvent, { kind: 'ticket.created' }> = {
+      kind: 'ticket.created',
+      ticket: { ...ticket, customerScope },
+    };
+
+    return { status: 'success', ticketId: ticket.id, ticketCreatedEvent };
   } catch (err) {
     if (
       err instanceof PpClientServerError ||

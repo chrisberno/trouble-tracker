@@ -5,5 +5,6 @@
 
 export { register } from './register';
 export { buildTwilioClient } from './twilio-client';
+export { dispatchTicketCreated } from './dispatch';
 export type { TwilioBridgeConfig, BridgeSource } from './types';
 export { BRIDGE_METADATA } from './types';

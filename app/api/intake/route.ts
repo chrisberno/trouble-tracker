@@ -1,23 +1,15 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { handleWebFormIntake } from '@/adapters/inbound/web-form/handler';
 import { connieConfig, connieTwilioConfig } from '@/deployments/connie';
 import config from '@/deployments/connie/config.json';
-import { register as registerTwilioBridge } from '@/adapters/bridge/human/twilio-flex';
+import { dispatchTicketCreated } from '@/adapters/bridge/human/twilio-flex';
 
 export const runtime = 'nodejs';
-
-// TTB-17 follow-up (2026-05-07): direct module-scope register call.
-//
-// Vercel runs each Next.js API route in its own isolated Node runtime — the
-// handlers Map inside pp-client/index.ts is per-route. The synthetic
-// publish('ticket.created') from handleWebFormIntake fires into THIS route's
-// handler map, so the bridge must be subscribed in THIS route's module load.
-//
-// The first attempt at this fix (PR #19) used a shared `lib/bridge-bootstrap`
-// side-effect import — Next.js + swc tree-shook the import despite the value
-// export. Direct call here mirrors the pattern in app/api/pp-webhook/route.ts
-// and is bundler-stable. register() has its own idempotency guard.
-registerTwilioBridge(connieTwilioConfig);
+// In-process bridge dispatch (Pattern B: 5 Twilio API creates) runs via
+// next/server's after() — outside the request/response cycle but still
+// within Vercel's function lifetime. Default Vercel function timeout is 10s;
+// allow 30s to accommodate cold-start + full Pattern B chain.
+export const maxDuration = 30;
 
 function getCorsHeaders(request: NextRequest): Record<string, string> {
   const origin = request.headers.get('origin');
@@ -78,6 +70,25 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   );
 
   if (result.status === 'success') {
+    // 2026-05-15: in-process Twilio Flex bridge dispatch via next/server
+    // after(). Fire-and-forget by design — form returns 201 in ~500ms while
+    // Pattern B (5 Twilio API creates: createConversation, addParticipant,
+    // postMessage, addWebhook, createInteraction) runs in the background of
+    // the same Vercel function lifetime. Scope is already known from the
+    // intake body, so this path is race-free.
+    //
+    // PP's ticket.created webhook still fires ~5-10s later. The webhook
+    // receiver's bridge dispatch re-enters onTicketCreated with the SAME
+    // ticketId → SAME idempotency key (`twilio:task:<ticketId>`) →
+    // isBridgeKeyProcessed returns true → short-circuit. No duplicate
+    // Twilio resources. See dispatch.ts for the doctrine.
+    //
+    // Error semantics: dispatchTicketCreated swallows + logs. The PP
+    // webhook is the eventual-consistency backstop for partial failures.
+    if (result.ticketCreatedEvent) {
+      after(dispatchTicketCreated(result.ticketCreatedEvent, connieTwilioConfig));
+    }
+
     return NextResponse.json(
       { ok: true, ticketId: result.ticketId },
       { status: 201, headers: corsHeaders },

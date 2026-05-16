@@ -56,13 +56,31 @@ export function IframeBlocker({ result }: { result: Extract<IframeGateResult, { 
           style={{
             fontSize: '14px',
             color: '#4b5563',
-            marginBottom: 0,
+            marginBottom: '16px',
             lineHeight: 1.5,
           }}
         >
           This page is only accessible from inside the Connie CRM container.
           Please access it via your Connie support portal.
         </p>
+        <details
+          style={{
+            fontSize: '12px',
+            color: '#6b7280',
+            textAlign: 'left',
+            backgroundColor: '#f9fafb',
+            border: '1px solid #e5e7eb',
+            borderRadius: '4px',
+            padding: '8px 10px',
+          }}
+        >
+          <summary style={{ cursor: 'pointer', userSelect: 'none' }}>Diagnostic info</summary>
+          <div style={{ marginTop: '8px', fontFamily: 'ui-monospace, monospace', wordBreak: 'break-all' }}>
+            <div>reason: {result.reason}</div>
+            <div>referer: {result.referer || '(none)'}</div>
+            <div>host: {result.host ?? '(none)'}</div>
+          </div>
+        </details>
       </div>
     </div>
   );

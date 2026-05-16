@@ -43,6 +43,15 @@ export async function checkIframeOrigin(): Promise<IframeGateResult> {
   const h = await headers();
   const referer = h.get('referer') ?? '';
   const selfHost = (h.get('host') ?? '').toLowerCase();
+  const secFetchDest = (h.get('sec-fetch-dest') ?? '').toLowerCase();
+
+  // Sec-Fetch-Dest is a forbidden header (browser-set, not script-settable).
+  // 'iframe'/'frame' = browser-confirmed embed; CSP frame-ancestors already
+  // gates who may embed us. Required for embeddings where the parent strips
+  // Referer via Referrer-Policy (e.g., NSS careteam.connie.team).
+  if (secFetchDest === 'iframe' || secFetchDest === 'frame') {
+    return { allowed: true, referer: referer || '(sec-fetch-dest=iframe)', host: 'iframe-embed' };
+  }
 
   if (!referer) {
     return { allowed: false, reason: 'no_referer', referer: '', host: null };

@@ -49,6 +49,22 @@ const DEFAULT_LIMIT = 50;
 
 const ALLOWED_SCOPES = new Set(config.customerScopes.map((c) => c.scope));
 
+const STATUS_FILTERS = ['all', 'open', 'in_progress', 'waiting', 'resolved', 'closed'] as const;
+type StatusFilter = (typeof STATUS_FILTERS)[number];
+
+const STATUS_FILTER_LABELS: Record<StatusFilter, string> = {
+  all: 'All',
+  open: 'Open',
+  in_progress: 'In Progress',
+  waiting: 'Waiting',
+  resolved: 'Resolved',
+  closed: 'Closed',
+};
+
+function isStatusFilter(s: string): s is StatusFilter {
+  return (STATUS_FILTERS as readonly string[]).includes(s);
+}
+
 function StatusPill({ status }: { status: string }) {
   const color =
     status === 'open' ? '#16a34a'
@@ -118,8 +134,9 @@ export default async function TicketsListPage({
   const customerScope = requestedScope && ALLOWED_SCOPES.has(requestedScope)
     ? requestedScope
     : undefined;
-  const showAll = params.status === 'all';
-  const statusFilter = showAll ? undefined : 'open' as const;
+  const requestedStatus = (params.status ?? '').trim().toLowerCase();
+  const activeStatus: StatusFilter = isStatusFilter(requestedStatus) ? requestedStatus : 'open';
+  const statusFilter = activeStatus === 'all' ? undefined : activeStatus;
 
   let tickets: Ticket[] = [];
   let error: string | null = null;
@@ -173,23 +190,37 @@ export default async function TicketsListPage({
           <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#111827', margin: 0 }}>Tickets</h1>
           <div style={{ marginTop: '6px', fontSize: '14px', color: '#4b5563' }}>
             Scope: <strong>{headingScope}</strong>
-            {' · '}
-            Status: <strong>{showAll ? 'all' : 'open'}</strong>
-            {customerScope && (
-              <>
-                {' · '}
-                <Link
-                  href={`/bridge/tickets?${new URLSearchParams({
-                    customerScope,
-                    ...(showAll ? {} : { status: 'all' }),
-                  }).toString()}`}
-                  style={{ color: '#2563eb', textDecoration: 'underline' }}
-                >
-                  {showAll ? 'show open only' : 'show all statuses'}
-                </Link>
-              </>
-            )}
           </div>
+          {customerScope && (
+            <div role="tablist" style={{ display: 'flex', gap: '6px', marginTop: '12px', flexWrap: 'wrap' }}>
+              {STATUS_FILTERS.map((s) => {
+                const isActive = s === activeStatus;
+                const linkParams = new URLSearchParams();
+                linkParams.set('customerScope', customerScope);
+                linkParams.set('status', s);
+                if (requestedTicketId) linkParams.set('ticketId', requestedTicketId);
+                return (
+                  <Link
+                    key={s}
+                    href={`/bridge/tickets?${linkParams.toString()}`}
+                    role="tab"
+                    aria-selected={isActive}
+                    style={{
+                      padding: '6px 14px',
+                      borderRadius: '999px',
+                      fontSize: '13px',
+                      fontWeight: 500,
+                      textDecoration: 'none',
+                      backgroundColor: isActive ? '#0263E0' : '#e5e7eb',
+                      color: isActive ? 'white' : '#374151',
+                    }}
+                  >
+                    {STATUS_FILTER_LABELS[s]}
+                  </Link>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {error && (
@@ -226,7 +257,7 @@ export default async function TicketsListPage({
                 )}
               </>
             ) : (
-              <>No {showAll ? '' : 'open '}tickets for {customerScope}.</>
+              <>No {activeStatus === 'all' ? '' : `${STATUS_FILTER_LABELS[activeStatus].toLowerCase()} `}tickets for {customerScope}.</>
             )}
           </div>
         ) : (

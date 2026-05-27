@@ -11,13 +11,18 @@
 // reply log fetched via pp-client). Phase 4 may re-add when wiring email loop.
 
 import { subscribe } from '@/pp-client';
+import type { DeploymentConfig } from '@/pp-client/types';
 import type { TwilioBridgeConfig } from './types';
 import { buildTwilioClient } from './twilio-client';
-import { onTicketCreated, onTicketRepliedAgent } from './handlers';
+import { onTicketCreated, onTicketRepliedAgent, onTicketRepliedCustomer } from './handlers';
 
 let registered = false;
 
-export function register(config: TwilioBridgeConfig): void {
+// Sprint 4.0: register now optionally accepts the full DeploymentConfig so it
+// can read channels.flexCustomerReplyNotification.enabled. Backward compatible:
+// callers passing only the TwilioBridgeConfig keep prior behavior (no customer-
+// reply subscriber). The pp-webhook route passes the deployment alongside.
+export function register(config: TwilioBridgeConfig, deployment?: DeploymentConfig): void {
   if (registered) {
     // Idempotent — pp-client.subscribe is also idempotent at the handlers map
     // level, but we add an extra guard to keep logs clean on hot module reloads.
@@ -37,17 +42,30 @@ export function register(config: TwilioBridgeConfig): void {
     await onTicketRepliedAgent(event, twilio);
   });
 
-  // Phase 3 events NOT subscribed:
-  //   - ticket.replied.customer (no Conversations layer; agent reads via iframe)
+  // Sprint 4.0 — ticket.replied.customer: gated on
+  // deployment.channels.flexCustomerReplyNotification.enabled. When true, fires
+  // a TaskRouter task attribute bump (ticketHasNewReply=true) which the basecamp
+  // ticket-reply-notification feature reads to surface a toast + canvas badge.
+  // When the flag is false or the deployment block is absent, the subscriber
+  // is not registered — pre-S4.0 behavior preserved.
+  const flexReplyEnabled =
+    deployment?.channels?.flexCustomerReplyNotification?.enabled === true;
+  if (flexReplyEnabled) {
+    subscribe(['ticket.replied.customer'], async (event) => {
+      if (event.kind !== 'ticket.replied.customer') return;
+      await onTicketRepliedCustomer(event, twilio);
+    });
+  }
+
+  // Phase 3 events still NOT subscribed:
   //   - ticket.status_changed / ticket.resolved / ticket.closed / ticket.deleted
-  //
-  // Phase 4 may add ticket.replied.customer for email loop integration.
 
   console.log(JSON.stringify({
     bridge: 'twilio-flex',
     info: 'registered handlers',
-    phase: '3-v2-taskrouter-pivot',
+    phase: '4-customer-reply-bump',
     deploymentId: config.deploymentId,
     workspaceSid: config.workspaceSid,
+    flexCustomerReplyNotificationEnabled: flexReplyEnabled,
   }));
 }

@@ -24,7 +24,7 @@ export const maxDuration = 30;
 // every route that dispatches OR publishes events. Side-effect imports via a
 // shared bootstrap module were tried and tree-shaken by the bundler — direct
 // call is the safest pattern. register() itself has an idempotency guard.
-registerTwilioBridge(connieTwilioConfig);
+registerTwilioBridge(connieTwilioConfig, connieConfig);
 
 // Sprint 2.0 Co-headline 2 (2026-05-08): customer-email outbound. Subscribes
 // to ticket.created + ticket.replied.agent and sends Connie-branded emails

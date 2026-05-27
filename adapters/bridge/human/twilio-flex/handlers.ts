@@ -376,3 +376,89 @@ export async function onTicketRepliedAgent(
     source: event.reply.source,
   }));
 }
+
+// ============================================================================
+// onTicketRepliedCustomer — Sprint 4.0: surface a customer reply in Flex
+//
+// Fires when PP emits `ticket.replied.customer` — which happens both when a
+// customer types into the canvas iframe AND when the email round-trip lands
+// (the /api/email-inbound webhook calls addReply with source='email', PP
+// classifies it as customer-authored, fires ticket.replied.customer).
+//
+// Action: set task.attributes.ticketHasNewReply=true + lastCustomerReplyAt
+// on the assigned Twilio task. The basecamp ticket-reply-notification feature
+// (Task 3b) reads the attribute via the Flex SDK's task-update push and
+// renders a notification + canvas badge to the assigned agent.
+//
+// Loop prevention: not needed at this layer. PP only fires
+// ticket.replied.customer when the author is the customer (or, via
+// /api/email-inbound, when source='email'). Agent replies fire
+// ticket.replied.agent which is handled by onTicketRepliedAgent above.
+//
+// Gated upstream in register.ts on deployment.channels.flexCustomerReplyNotification.enabled.
+// ============================================================================
+
+export async function onTicketRepliedCustomer(
+  event: Extract<CoreEvent, { kind: 'ticket.replied.customer' }>,
+  twilio: TwilioClient,
+): Promise<void> {
+  const { ticketId, reply } = event;
+
+  // Look up the bound Twilio task. If no mapping, the customer reply is on a
+  // ticket that doesn't have a Flex task (intake never created one, or the
+  // task has been closed and the mapping torn down). Logged + no-op.
+  const mapping = await getBridgeMappingByTicketId(ticketId);
+  if (!mapping?.taskSid) {
+    console.log(JSON.stringify({
+      bridge: 'twilio-flex',
+      handler: 'onTicketRepliedCustomer',
+      info: 'no bound task; skipping attribute bump',
+      ticketId,
+      replyId: reply.id,
+    }));
+    return;
+  }
+
+  // Read-merge-write. TaskRouter POST /Tasks/{sid} Attributes is full-replace;
+  // partial writes would wipe load-bearing fields (deploymentId, customerScope,
+  // etc.). Race window between get and put is ~200ms with effectively zero
+  // concurrent-write rate per task — acceptable for v1.
+  try {
+    const { attributes: current, assignmentStatus, workerSid } =
+      await twilio.getTaskAttributes(mapping.taskSid);
+    const merged: Record<string, unknown> = {
+      ...current,
+      ticketHasNewReply: true,
+      lastCustomerReplyAt: new Date().toISOString(),
+      lastCustomerReplyId: reply.id,
+    };
+    await twilio.updateTaskAttributes({
+      taskSid: mapping.taskSid,
+      attributes: merged,
+    });
+    console.log(JSON.stringify({
+      bridge: 'twilio-flex',
+      handler: 'onTicketRepliedCustomer',
+      ok: true,
+      ticketId,
+      replyId: reply.id,
+      taskSid: mapping.taskSid,
+      assignmentStatus,
+      workerSid,
+      replySource: reply.source ?? 'customer-direct',
+    }));
+  } catch (err) {
+    // Non-fatal — log + continue. The reply itself is durable in PP; failure
+    // to mirror the flag into task.attributes only means the agent misses the
+    // proactive surface but can still see the reply in the canvas iframe.
+    console.warn(JSON.stringify({
+      bridge: 'twilio-flex',
+      handler: 'onTicketRepliedCustomer',
+      warning: 'attribute bump failed; reply still visible in iframe',
+      ticketId,
+      replyId: reply.id,
+      taskSid: mapping.taskSid,
+      error: err instanceof Error ? err.message : String(err),
+    }));
+  }
+}

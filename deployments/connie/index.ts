@@ -1,4 +1,4 @@
-import type { DeploymentConfig } from '@/pp-client/types';
+import type { ChannelsConfig, DeploymentConfig } from '@/pp-client/types';
 import type { TwilioBridgeConfig } from '@/adapters/bridge/human/twilio-flex/types';
 import config from './config.json';
 
@@ -20,6 +20,7 @@ export function buildConnieConfig(): DeploymentConfig {
     },
     statusMap: config.statusMap,
     customFieldIds: config.customFieldIds,
+    channels: (config as { channels?: ChannelsConfig }).channels,
   };
 }
 

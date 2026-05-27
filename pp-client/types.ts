@@ -79,6 +79,56 @@ export interface DeploymentConfig {
       intake_source: number;   // ID of the ticket-scoped 'intake_source' field
     };
   };
+  // Sprint 4.0 — per-deployment channel configuration. Substrate reads these
+  // and conditionally registers subscribers / overrides hardcoded defaults.
+  // Absence preserves pre-S4.0 behavior (customer-email always-on, no Flex
+  // customer-reply subscriber).
+  channels?: ChannelsConfig;
+}
+
+// Per-deployment channel toggles. Mirrors the basecamp flex-project-template
+// feature-management pattern: enabled-or-not, plus the narrow set of knobs
+// each channel needs. Adding a new channel = new block here + new reader in
+// the relevant adapter's register.ts.
+export interface ChannelsConfig {
+  customerEmail?: CustomerEmailChannelConfig;
+  flexCustomerReplyNotification?: FlexCustomerReplyNotificationConfig;
+}
+
+export interface CustomerEmailChannelConfig {
+  // Master toggle. false = customer-email subscribers don't register at all,
+  // substrate stays silent on ticket.created / ticket.replied.agent.
+  enabled: boolean;
+  // Which PP events fire outbound mail. Subset of ['ticket.created',
+  // 'ticket.replied.agent']. Order-insensitive. Absent or empty array = no
+  // events fire (effectively `enabled: false`).
+  events: Array<'ticket.created' | 'ticket.replied.agent'>;
+  // Reply-To header on outbound mail. Customer's reply lands here.
+  //   - 'support@connie.team' (legacy): human inbox, no round-trip
+  //   - 'replies@crm.connie.center' (Sprint 4.0): Mailgun-managed, route
+  //     forwards to /api/email-inbound + mirrors to support@connie.team
+  replyTo: string;
+  // Optional: documentation-only mirror of where the Mailgun route's forward()
+  // action delivers a copy. Code does not consume this value — it's recorded
+  // here so the deployment file is the single source of truth on where
+  // customer replies end up. The actual forward target is configured in the
+  // Mailgun route (Task 4).
+  replyToForward?: string;
+  // Optional: documentation-only flag. true = the Mailgun inbound route
+  // (notify=/api/email-inbound) is configured for replyTo. Code does not
+  // consume this — it's a config-file canary so future ops know whether the
+  // round-trip is wired without spelunking through Mailgun dashboard.
+  inboundWebhook?: boolean;
+}
+
+export interface FlexCustomerReplyNotificationConfig {
+  // When true, the bridge handler emits the Flex-side surface for
+  // ticket.replied.customer events: task.attributes.ticketHasNewReply=true on
+  // the assigned task + a Flex notification to the assigned agent. The
+  // basecamp ticket-reply-notification feature (Task 3) reads the attribute
+  // and renders the canvas badge. When false, no attribute mutation, no
+  // notification.
+  enabled: boolean;
 }
 
 // Typed errors — never return undefined or { success: false }

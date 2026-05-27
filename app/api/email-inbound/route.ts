@@ -130,19 +130,62 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const rawBody = await request.text();
     const params = new URLSearchParams(rawBody);
 
-    // Step 1 — verify Mailgun signature.
-    const timestamp = params.get('timestamp') ?? '';
-    const token = params.get('token') ?? '';
-    const signature = params.get('signature') ?? '';
-    const verifyResult = verifyMailgunSignature(timestamp, token, signature);
-    if (!verifyResult.ok) {
+    // Step 1 — authenticate the request. Two paths accepted (either suffices):
+    //
+    //   (a) URL shared-secret: ?secret=<MAILGUN_INBOUND_SHARED_SECRET>
+    //       Used by Mailgun route `forward(URL?secret=...)`. Bypasses HMAC.
+    //       Adopted Sprint 4.0 (2026-05-27) after we discovered Mailgun's
+    //       webhook signing key is dashboard-only on Developer-tier API and
+    //       cannot be programmatically fetched. The shared secret achieves
+    //       the same auth goal: only the holder of the route config can
+    //       legitimately fire this endpoint.
+    //
+    //   (b) Mailgun HMAC signature triple (timestamp + token + signature)
+    //       HMAC'd against MAILGUN_WEBHOOK_SIGNING_KEY (preferred) or
+    //       MAILGUN_API_KEY (legacy fallback for accounts where the API key
+    //       IS the signing key). This path remains for backward compat and
+    //       defense in depth — if the URL secret leaks but the HMAC works,
+    //       we still accept; if the URL secret is right but HMAC is missing,
+    //       we still accept.
+    //
+    // Either path verified → continue. Neither → 401.
+    const sharedSecret = process.env.MAILGUN_INBOUND_SHARED_SECRET ?? '';
+    const providedSecret = request.nextUrl.searchParams.get('secret') ?? '';
+    const sharedSecretOk =
+      sharedSecret.length > 0 &&
+      providedSecret.length === sharedSecret.length &&
+      crypto.timingSafeEqual(
+        Buffer.from(providedSecret),
+        Buffer.from(sharedSecret),
+      );
+
+    let hmacOk = false;
+    let hmacReason = '(shared-secret path not attempted)';
+    if (!sharedSecretOk) {
+      const timestamp = params.get('timestamp') ?? '';
+      const token = params.get('token') ?? '';
+      const signature = params.get('signature') ?? '';
+      const verifyResult = verifyMailgunSignature(timestamp, token, signature);
+      hmacOk = verifyResult.ok;
+      if (!verifyResult.ok) hmacReason = verifyResult.reason;
+    }
+
+    if (!sharedSecretOk && !hmacOk) {
       console.warn(JSON.stringify({
         email_inbound: true,
-        warning: 'mailgun signature verification failed',
-        reason: verifyResult.reason,
+        warning: 'authentication failed',
+        sharedSecretProvided: providedSecret.length > 0,
+        sharedSecretConfigured: sharedSecret.length > 0,
+        hmacReason,
       }));
-      return NextResponse.json({ error: 'signature verification failed' }, { status: 401 });
+      return NextResponse.json({ error: 'authentication failed' }, { status: 401 });
     }
+
+    console.log(JSON.stringify({
+      email_inbound: true,
+      info: 'authenticated',
+      method: sharedSecretOk ? 'shared-secret' : 'hmac',
+    }));
 
     // Step 2 — extract canonical fields.
     const parsed: ParsedInbound = {
@@ -247,15 +290,20 @@ function verifyMailgunSignature(
   if (!timestamp || !token || !signature) {
     return { ok: false, reason: 'missing signature triple' };
   }
-  const apiKey = process.env.MAILGUN_API_KEY;
-  if (!apiKey) {
-    return { ok: false, reason: 'MAILGUN_API_KEY not configured' };
+  // Sprint 4.0 (2026-05-27): prefer MAILGUN_WEBHOOK_SIGNING_KEY when set
+  // (modern Mailgun accounts use a separate HTTP webhook signing key,
+  // dashboard-only). Fall back to MAILGUN_API_KEY for older accounts where
+  // the API key IS the signing key.
+  const signingKey =
+    process.env.MAILGUN_WEBHOOK_SIGNING_KEY ?? process.env.MAILGUN_API_KEY;
+  if (!signingKey) {
+    return { ok: false, reason: 'no signing key configured' };
   }
   const ageSeconds = Math.abs(Math.floor(Date.now() / 1000) - Number(timestamp));
   if (!Number.isFinite(ageSeconds) || ageSeconds > MAX_SIGNATURE_AGE_SECONDS) {
     return { ok: false, reason: `timestamp age ${ageSeconds}s exceeds window` };
   }
-  const computed = crypto.createHmac('sha256', apiKey).update(timestamp + token).digest('hex');
+  const computed = crypto.createHmac('sha256', signingKey).update(timestamp + token).digest('hex');
   // Constant-time comparison.
   if (computed.length !== signature.length) return { ok: false, reason: 'signature length mismatch' };
   const a = Buffer.from(computed, 'hex');

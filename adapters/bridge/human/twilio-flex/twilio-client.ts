@@ -756,6 +756,54 @@ export async function updateTaskAttributes(
   });
 }
 
+// Sprint 4.0 Task 3: read current task attributes so handlers can read-merge-
+// write (TaskRouter's POST /Tasks Attributes is full-replace; without a
+// pre-fetch a partial write would wipe load-bearing fields like deploymentId,
+// customerScope, etc.). Race window between get and put exists but is small
+// (~200ms) and our concurrent-write rate on a single task is effectively zero.
+export interface GetTaskAttributesResult {
+  taskSid: string;
+  attributes: Record<string, unknown>;
+  assignmentStatus?: string;
+  workerSid?: string;
+}
+
+interface RawTaskFetch {
+  sid?: string;
+  attributes?: string;
+  assignment_status?: string;
+  worker_sid?: string;
+}
+
+export async function getTaskAttributes(
+  taskSid: string,
+  config: TwilioBridgeConfig,
+): Promise<GetTaskAttributesResult> {
+  const url = `https://taskrouter.twilio.com/v1/Workspaces/${encodeURIComponent(
+    config.workspaceSid,
+  )}/Tasks/${encodeURIComponent(taskSid)}`;
+  const raw = await twilioFetch<RawTaskFetch>({
+    method: 'GET',
+    url,
+    accountSid: config.accountSid,
+    authToken: config.authToken,
+  });
+  let attributes: Record<string, unknown> = {};
+  if (typeof raw.attributes === 'string') {
+    try {
+      attributes = JSON.parse(raw.attributes);
+    } catch {
+      // Empty parse → caller starts from {} which is correct fallback.
+    }
+  }
+  return {
+    taskSid: raw.sid ?? taskSid,
+    attributes,
+    assignmentStatus: raw.assignment_status,
+    workerSid: raw.worker_sid,
+  };
+}
+
 export interface TwilioClient {
   config: TwilioBridgeConfig;
   createTask: (input: CreateTaskInput, idempotencyKey: string) => Promise<CreateTaskResult>;
@@ -771,6 +819,8 @@ export interface TwilioClient {
   // TTB-17 fix #5 — race-loss backfill
   updateConversationAttributes: (input: UpdateConversationAttributesInput) => Promise<void>;
   updateTaskAttributes: (input: UpdateTaskAttributesInput) => Promise<void>;
+  // Sprint 4.0 Task 3 — read-merge-write pattern for partial attribute updates
+  getTaskAttributes: (taskSid: string) => Promise<GetTaskAttributesResult>;
   verifySignature: (opts: Omit<Parameters<typeof verifyTwilioSignature>[0], 'authToken'>) => boolean;
 }
 
@@ -786,6 +836,7 @@ export function buildTwilioClient(config: TwilioBridgeConfig): TwilioClient {
     fetchConversationMedia: (input) => fetchConversationMedia(input, config),
     updateConversationAttributes: (input) => updateConversationAttributes(input, config),
     updateTaskAttributes: (input) => updateTaskAttributes(input, config),
+    getTaskAttributes: (taskSid) => getTaskAttributes(taskSid, config),
     verifySignature: (opts) => verifyTwilioSignature({ ...opts, authToken: config.authToken }),
   };
 }

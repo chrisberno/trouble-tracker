@@ -18,27 +18,55 @@ import type { DeploymentConfig } from '@/pp-client/types';
 
 let registered = false;
 
+// Sprint 4.0 default: when a deployment omits channels.customerEmail entirely
+// we preserve pre-S4.0 behavior — enabled, both events firing, Reply-To
+// unset (mailgun.ts falls back to DEFAULT_REPLY_TO). The connie deployment
+// now ships the explicit block; this default is for any future deployment
+// that hasn't been migrated yet.
+const LEGACY_DEFAULT_EVENTS: Array<'ticket.created' | 'ticket.replied.agent'> = [
+  'ticket.created',
+  'ticket.replied.agent',
+];
+
 export function register(deployment: DeploymentConfig): void {
   if (registered) return;
   registered = true;
 
+  // Sprint 4.0 — read per-deployment channel config. Absence preserves
+  // pre-S4.0 always-on behavior. Disabled flag short-circuits all subscribers
+  // for this deployment without removing the substrate code path.
+  const cfg = deployment.channels?.customerEmail;
+  const enabled = cfg ? cfg.enabled : true;
+  const events = cfg ? cfg.events : LEGACY_DEFAULT_EVENTS;
+  const replyTo = cfg?.replyTo;
+
+  if (!enabled) {
+    console.log(JSON.stringify({
+      customer_email: true,
+      info: 'channel disabled by deployment config; no subscribers registered',
+    }));
+    return;
+  }
+
   // ticket.created — confirmation to submitter.
-  subscribe(['ticket.created'], async (event) => {
-    if (event.kind !== 'ticket.created') return;
-    try {
-      // Hydrate scope from bridge-db (PP's getTicket / webhook payload omits
-      // custom_fields; bridge-db is the source of truth — TTB-17 architecture).
-      const enriched = await enrichScopeFromBridgeDb(event.ticket);
-      await sendTicketCreatedEmail(enriched);
-    } catch (err) {
-      console.warn(JSON.stringify({
-        customer_email: true,
-        warning: 'sendTicketCreatedEmail threw; not retrying',
-        ticketId: event.ticket.id,
-        error: err instanceof Error ? err.message : String(err),
-      }));
-    }
-  });
+  if (events.includes('ticket.created')) {
+    subscribe(['ticket.created'], async (event) => {
+      if (event.kind !== 'ticket.created') return;
+      try {
+        // Hydrate scope from bridge-db (PP's getTicket / webhook payload omits
+        // custom_fields; bridge-db is the source of truth — TTB-17 architecture).
+        const enriched = await enrichScopeFromBridgeDb(event.ticket);
+        await sendTicketCreatedEmail(enriched, { replyTo });
+      } catch (err) {
+        console.warn(JSON.stringify({
+          customer_email: true,
+          warning: 'sendTicketCreatedEmail threw; not retrying',
+          ticketId: event.ticket.id,
+          error: err instanceof Error ? err.message : String(err),
+        }));
+      }
+    });
+  }
 
   // ticket.replied.agent — reply notification to submitter.
   // event.reply has the body but the customer email lives on the Ticket.
@@ -46,26 +74,30 @@ export function register(deployment: DeploymentConfig): void {
   // a fresh fetch (the event payload only has rawTicket, not the normalized
   // form with customer email reliably populated). getTicket() round-trip is
   // ~300ms and only fires for agent-replies which are infrequent — acceptable.
-  subscribe(['ticket.replied.agent'], async (event) => {
-    if (event.kind !== 'ticket.replied.agent') return;
-    try {
-      const ticket = await getTicket(event.ticketId, deployment);
-      const enriched = await enrichScopeFromBridgeDb(ticket);
-      await sendAgentReplyEmail({ ticket: enriched, reply: event.reply });
-    } catch (err) {
-      console.warn(JSON.stringify({
-        customer_email: true,
-        warning: 'sendAgentReplyEmail threw; not retrying',
-        ticketId: event.ticketId,
-        error: err instanceof Error ? err.message : String(err),
-      }));
-    }
-  });
+  if (events.includes('ticket.replied.agent')) {
+    subscribe(['ticket.replied.agent'], async (event) => {
+      if (event.kind !== 'ticket.replied.agent') return;
+      try {
+        const ticket = await getTicket(event.ticketId, deployment);
+        const enriched = await enrichScopeFromBridgeDb(ticket);
+        await sendAgentReplyEmail({ ticket: enriched, reply: event.reply, replyTo });
+      } catch (err) {
+        console.warn(JSON.stringify({
+          customer_email: true,
+          warning: 'sendAgentReplyEmail threw; not retrying',
+          ticketId: event.ticketId,
+          error: err instanceof Error ? err.message : String(err),
+        }));
+      }
+    });
+  }
 
   console.log(JSON.stringify({
     customer_email: true,
     info: 'registered subscribers',
-    events: ['ticket.created', 'ticket.replied.agent'],
+    events,
+    replyTo: replyTo ?? '(falls back to mailgun.ts DEFAULT_REPLY_TO)',
+    source: cfg ? 'deployment.channels.customerEmail' : 'legacy-default',
   }));
 }
 

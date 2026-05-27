@@ -81,6 +81,22 @@ export async function sendAgentReplyEmail(args: {
     }));
     return;
   }
+  // Sprint 4.0 Task 7 (2026-05-27): skip email-sourced replies. Per the partial
+  // smoke discovery on ticket #100, PP classifies pp-client.addReply(source=email)
+  // as .agent (staff-auth attaches staff_id). Without this guard, the customer-
+  // email subscriber would fire a "we replied" outbound for the customer's OWN
+  // reply — a cosmetic loop. The X-PP-Source: email header on /api/email-inbound's
+  // addReply call is mirrored back to us here as reply.source, so we detect and
+  // skip. Genuine agent canvas replies (source: 'flex' or unset) still fire.
+  if (reply.source === 'email') {
+    console.log(JSON.stringify({
+      customer_email: true,
+      info: 'reply is email-sourced (customer reply via /api/email-inbound); skipping notification (Sprint 4.0 Task 7)',
+      ticketId: ticket.id,
+      replyId: reply.id,
+    }));
+    return;
+  }
   if (!reply.body?.trim()) {
     console.log(JSON.stringify({
       customer_email: true,

@@ -14,7 +14,12 @@ import { subscribe } from '@/pp-client';
 import type { DeploymentConfig } from '@/pp-client/types';
 import type { TwilioBridgeConfig } from './types';
 import { buildTwilioClient } from './twilio-client';
-import { onTicketCreated, onTicketRepliedAgent, onTicketRepliedCustomer } from './handlers';
+import {
+  onTicketCreated,
+  onTicketRepliedAgent,
+  onTicketRepliedAgentFromEmail,
+  onTicketRepliedCustomer,
+} from './handlers';
 
 let registered = false;
 
@@ -37,19 +42,30 @@ export function register(config: TwilioBridgeConfig, deployment?: DeploymentConf
     await onTicketCreated(event, twilio);
   });
 
+  // Sprint 4.0 Task 7 (2026-05-27): subscribe to ticket.replied.agent ALWAYS
+  // (existing observe-only path) but ALSO dispatch to the email-sourced-as-
+  // customer handler when the Flex reply notification flag is on. The double-
+  // dispatch keeps the legacy observer untouched while adding the new behavior
+  // behind the feature flag.
+  const flexReplyEnabled =
+    deployment?.channels?.flexCustomerReplyNotification?.enabled === true;
+
   subscribe(['ticket.replied.agent'], async (event) => {
     if (event.kind !== 'ticket.replied.agent') return;
     await onTicketRepliedAgent(event, twilio);
+    if (flexReplyEnabled) {
+      // Email-sourced .agent replies are CUSTOMER replies from PP's perspective
+      // (PP classifies as .agent because pp-client uses staff-auth). The handler
+      // self-filters on event.reply.source === 'email'; non-email replies are
+      // a no-op. Discovered + codified during the ticket #100 partial smoke
+      // 2026-05-27. Sprint 4.0 Task 7.
+      await onTicketRepliedAgentFromEmail(event, twilio);
+    }
   });
 
-  // Sprint 4.0 — ticket.replied.customer: gated on
-  // deployment.channels.flexCustomerReplyNotification.enabled. When true, fires
-  // a TaskRouter task attribute bump (ticketHasNewReply=true) which the basecamp
-  // ticket-reply-notification feature reads to surface a toast + canvas badge.
-  // When the flag is false or the deployment block is absent, the subscriber
-  // is not registered — pre-S4.0 behavior preserved.
-  const flexReplyEnabled =
-    deployment?.channels?.flexCustomerReplyNotification?.enabled === true;
+  // Native ticket.replied.customer remains subscribed when the flag is on. PP
+  // doesn't currently fire it for our flows (see Task 7 root cause), but a
+  // future deployment that auths PP differently would hit this path.
   if (flexReplyEnabled) {
     subscribe(['ticket.replied.customer'], async (event) => {
       if (event.kind !== 'ticket.replied.customer') return;

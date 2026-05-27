@@ -402,8 +402,43 @@ export async function onTicketRepliedCustomer(
   event: Extract<CoreEvent, { kind: 'ticket.replied.customer' }>,
   twilio: TwilioClient,
 ): Promise<void> {
-  const { ticketId, reply } = event;
+  await bumpTaskAttributesForReply(event.ticketId, event.reply, twilio, 'onTicketRepliedCustomer');
+}
 
+// Sprint 4.0 Task 7 (2026-05-27): email-sourced customer replies arrive as
+// ticket.replied.AGENT events from PP, NOT ticket.replied.customer. Discovered
+// during partial smoke on ticket #100 (replyId=65). Root cause: pp-client.addReply
+// uses staff-auth API → Perfex attaches a staff_id → fires .agent webhook.
+// /api/email-inbound's design comment (line ~78) assumed PP would fire .customer
+// — that assumption is empirically wrong for our Foundation 50k tier.
+//
+// This handler subscribes to ticket.replied.agent + filters to reply.source ===
+// 'email' (set by /api/email-inbound on addReply). Treats those as customer
+// replies for the Flex notification path. Non-email-sourced .agent replies are
+// genuine agent canvas replies and skip this handler.
+export async function onTicketRepliedAgentFromEmail(
+  event: Extract<CoreEvent, { kind: 'ticket.replied.agent' }>,
+  twilio: TwilioClient,
+): Promise<void> {
+  if (event.reply.source !== 'email') {
+    // Not an email-sourced reply — genuine agent canvas reply. Skip; the
+    // onTicketRepliedAgent observer handles those.
+    return;
+  }
+  await bumpTaskAttributesForReply(event.ticketId, event.reply, twilio, 'onTicketRepliedAgentFromEmail');
+}
+
+// Shared helper: read current task attributes, merge in the new-reply markers,
+// write back. Extracted 2026-05-27 so both onTicketRepliedCustomer (native PP
+// customer replies — e.g. if a future deployment auths PP differently) AND
+// onTicketRepliedAgentFromEmail (email-sourced, the actual production path)
+// can share the bump logic.
+async function bumpTaskAttributesForReply(
+  ticketId: string,
+  reply: import('@/pp-client/types').Reply,
+  twilio: TwilioClient,
+  handlerName: string,
+): Promise<void> {
   // Look up the bound Twilio task. If no mapping, the customer reply is on a
   // ticket that doesn't have a Flex task (intake never created one, or the
   // task has been closed and the mapping torn down). Logged + no-op.
@@ -411,7 +446,7 @@ export async function onTicketRepliedCustomer(
   if (!mapping?.taskSid) {
     console.log(JSON.stringify({
       bridge: 'twilio-flex',
-      handler: 'onTicketRepliedCustomer',
+      handler: handlerName,
       info: 'no bound task; skipping attribute bump',
       ticketId,
       replyId: reply.id,
@@ -438,7 +473,7 @@ export async function onTicketRepliedCustomer(
     });
     console.log(JSON.stringify({
       bridge: 'twilio-flex',
-      handler: 'onTicketRepliedCustomer',
+      handler: handlerName,
       ok: true,
       ticketId,
       replyId: reply.id,
@@ -453,7 +488,7 @@ export async function onTicketRepliedCustomer(
     // proactive surface but can still see the reply in the canvas iframe.
     console.warn(JSON.stringify({
       bridge: 'twilio-flex',
-      handler: 'onTicketRepliedCustomer',
+      handler: handlerName,
       warning: 'attribute bump failed; reply still visible in iframe',
       ticketId,
       replyId: reply.id,

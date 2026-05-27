@@ -16,7 +16,15 @@ import type { Ticket, Reply } from '@/pp-client/types';
 import { sendCustomerEmail } from './mailgun';
 import { renderTicketCreatedEmail, renderAgentReplyEmail } from './templates';
 
-export async function sendTicketCreatedEmail(ticket: Ticket): Promise<void> {
+// replyTo is sourced from deployment.channels.customerEmail.replyTo when the
+// subscriber is registered via register.ts. The legacy hardcoded fallback in
+// mailgun.ts (DEFAULT_REPLY_TO) is retained as a safety net for any
+// pre-Sprint-4.0 call paths that may not have plumbed config through yet,
+// but the canonical surface is this argument.
+export async function sendTicketCreatedEmail(
+  ticket: Ticket,
+  options: { replyTo?: string } = {},
+): Promise<void> {
   if (!ticket.customer.email) {
     console.log(JSON.stringify({
       customer_email: true,
@@ -32,6 +40,7 @@ export async function sendTicketCreatedEmail(ticket: Ticket): Promise<void> {
     subject: tmpl.subject,
     textBody: tmpl.textBody,
     htmlBody: tmpl.htmlBody,
+    replyTo: options.replyTo,
     tags: ['ticket-created', `scope-${ticket.customerScope || 'unknown'}`],
     customVars: { ticketId: ticket.id, eventKind: 'ticket.created' },
     ticketId: ticket.id,
@@ -41,8 +50,9 @@ export async function sendTicketCreatedEmail(ticket: Ticket): Promise<void> {
 export async function sendAgentReplyEmail(args: {
   ticket: Ticket;
   reply: Reply;
+  replyTo?: string;
 }): Promise<void> {
-  const { ticket, reply } = args;
+  const { ticket, reply, replyTo } = args;
 
   // TTB-24 (Sprint 2.0 reopen, 2026-05-08): acceptance gate #6 fix.
   // Original defensive filter (`authorKind === 'agent'` + non-empty body)
@@ -95,6 +105,7 @@ export async function sendAgentReplyEmail(args: {
     subject: tmpl.subject,
     textBody: tmpl.textBody,
     htmlBody: tmpl.htmlBody,
+    replyTo,
     tags: ['agent-reply', `scope-${ticket.customerScope || 'unknown'}`],
     customVars: {
       ticketId: ticket.id,

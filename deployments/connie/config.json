@@ -40,5 +40,17 @@
     "https://hhovv.connie.team",
     "https://lifeline.connie.team"
   ],
-  "fallbackEmail": "tickets@connie.peopleperson.app"
+  "fallbackEmail": "tickets@connie.peopleperson.app",
+  "channels": {
+    "customerEmail": {
+      "enabled": true,
+      "events": ["ticket.created", "ticket.replied.agent"],
+      "replyTo": "support@connie.team",
+      "replyToForward": "support@connie.team",
+      "inboundWebhook": false
+    },
+    "flexCustomerReplyNotification": {
+      "enabled": false
+    }
+  }
 }

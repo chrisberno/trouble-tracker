@@ -45,12 +45,12 @@
     "customerEmail": {
       "enabled": true,
       "events": ["ticket.created", "ticket.replied.agent"],
-      "replyTo": "support@connie.team",
+      "replyTo": "replies@crm.connie.center",
       "replyToForward": "support@connie.team",
-      "inboundWebhook": false
+      "inboundWebhook": true
     },
     "flexCustomerReplyNotification": {
-      "enabled": false
+      "enabled": true
     }
   }
 }

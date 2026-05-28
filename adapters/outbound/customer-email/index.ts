@@ -88,12 +88,17 @@ export async function sendAgentReplyEmail(args: {
   // reply — a cosmetic loop. The X-PP-Source: email header on /api/email-inbound's
   // addReply call is mirrored back to us here as reply.source, so we detect and
   // skip. Genuine agent canvas replies (source: 'flex' or unset) still fire.
-  if (reply.source === 'email') {
+  // S7 adds source==='client' (portal client-view reply) to the skip set: both
+  // 'email' and 'client' are the CUSTOMER talking, so emailing them their own
+  // words would be a cosmetic loop. Genuine agent replies (source 'flex' or
+  // unset) still fire the outbound notification.
+  if (reply.source === 'email' || reply.source === 'client') {
     console.log(JSON.stringify({
       customer_email: true,
-      info: 'reply is email-sourced (customer reply via /api/email-inbound); skipping notification (Sprint 4.0 Task 7)',
+      info: 'reply is customer-originated (email or portal client reply); skipping outbound notification',
       ticketId: ticket.id,
       replyId: reply.id,
+      source: reply.source,
     }));
     return;
   }

@@ -24,6 +24,10 @@ export const dynamic = 'force-dynamic';
 interface CustomerReplyBody {
   ticketId?: unknown;
   body?: unknown;
+  // S7: set by the portal CLIENT view (TicketActions viewerMode='client'). When
+  // true, the reply is tagged source='client' (customer-originated) so it flows
+  // through the reopen/notify pipeline rather than the agent reply path.
+  fromClient?: unknown;
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
@@ -32,6 +36,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     const ticketId = typeof payload.ticketId === 'string' ? payload.ticketId : '';
     const replyBody = typeof payload.body === 'string' ? payload.body.trim() : '';
+    const fromClient = payload.fromClient === true;
 
     if (!ticketId) {
       return NextResponse.json({ error: 'ticketId required' }, { status: 400 });
@@ -40,9 +45,15 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       return NextResponse.json({ error: 'body required' }, { status: 400 });
     }
 
+    // S7: agent replies keep source='flex' (BRIDGE_METADATA.source) → emailed to
+    // the customer, observed only. CLIENT portal replies get source='client'
+    // (customer-originated) → flow through the bump/reopen/notify pipeline so
+    // they reach the CCT agent, and are NOT emailed back to the customer.
+    const source = fromClient ? 'client' : BRIDGE_METADATA.source;
+
     const reply = await addReply(
       ticketId,
-      { body: replyBody, isInternal: false, source: BRIDGE_METADATA.source },
+      { body: replyBody, isInternal: false, source },
       connieConfig,
     );
 
@@ -52,6 +63,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       ok: true,
       ticketId,
       replyId: reply.id,
+      source,
+      fromClient,
     }));
 
     return NextResponse.json({ ok: true, ticketId, replyId: reply.id }, { status: 200 });

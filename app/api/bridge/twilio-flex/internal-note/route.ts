@@ -15,6 +15,7 @@ import { addReply } from '@/pp-client';
 import { connieConfig } from '@/deployments/connie';
 import { BRIDGE_METADATA } from '@/adapters/bridge/human/twilio-flex';
 import { corsPreflight, withCors } from '@/adapters/bridge/human/twilio-flex/cors';
+import { captureTicketReply } from '@/adapters/bridge/human/twilio-flex/bridge-db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -51,6 +52,31 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       { body: noteBody, isInternal: true, source: BRIDGE_METADATA.sourceInternal },
       connieConfig,
     );
+
+    // S7 C2: PeoplePerson does NOT fire its reply webhook for internal notes
+    // (verified via smoke — the webhook capture misses them). Capture here at
+    // creation so the note appears in the AGENT conversation thread. internalNote
+    // is true → the ticket view filters it out of the CLIENT thread (privacy).
+    // Idempotent on (ticket_id, reply_id), so no double-capture risk.
+    try {
+      await captureTicketReply({
+        ticketId,
+        replyId: String(reply.id),
+        body: noteBody,
+        authorKind: 'agent',
+        source: BRIDGE_METADATA.sourceInternal,
+        internalNote: true,
+        createdAt: reply.createdAt ?? new Date().toISOString(),
+      });
+    } catch (err) {
+      console.warn(JSON.stringify({
+        bridge: 'twilio-flex',
+        route: 'internal-note',
+        info: 'reply capture failed (non-fatal)',
+        ticketId,
+        error: err instanceof Error ? err.message : String(err),
+      }));
+    }
 
     console.log(JSON.stringify({
       bridge: 'twilio-flex',

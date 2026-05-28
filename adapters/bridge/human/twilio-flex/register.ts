@@ -59,7 +59,9 @@ export function register(config: TwilioBridgeConfig, deployment?: DeploymentConf
       // self-filters on event.reply.source === 'email'; non-email replies are
       // a no-op. Discovered + codified during the ticket #100 partial smoke
       // 2026-05-27. Sprint 4.0 Task 7.
-      await onTicketRepliedAgentFromEmail(event, twilio);
+      // S6: deployment threaded through so a reply on a dead/closed ticket can
+      // reopen + mint a fresh task (reopens are the common async case).
+      await onTicketRepliedAgentFromEmail(event, twilio, deployment);
     }
   });
 
@@ -69,7 +71,7 @@ export function register(config: TwilioBridgeConfig, deployment?: DeploymentConf
   if (flexReplyEnabled) {
     subscribe(['ticket.replied.customer'], async (event) => {
       if (event.kind !== 'ticket.replied.customer') return;
-      await onTicketRepliedCustomer(event, twilio);
+      await onTicketRepliedCustomer(event, twilio, deployment);
     });
   }
 

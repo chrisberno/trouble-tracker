@@ -15,6 +15,7 @@ export {
   updateStatus,
   resolveTicket,
   closeTicket,
+  reopenTicket,
 } from './api-client';
 export type {
   Ticket,

@@ -26,9 +26,14 @@ const FLIPPABLE_STATUSES: TicketStatus[] = ['open', 'in_progress', 'closed'];
 interface Props {
   ticketId: string;
   currentStatus: TicketStatus;
+  // S6: 'client' trims this footer to a customer-appropriate view — no
+  // internal-note box, "Reply" not "Reply to customer". Default 'agent'
+  // renders identically to pre-S6 (the agent canvas sends no viewerMode).
+  viewerMode?: 'agent' | 'client';
 }
 
-export function TicketActions({ ticketId, currentStatus }: Props) {
+export function TicketActions({ ticketId, currentStatus, viewerMode = 'agent' }: Props) {
+  const isClient = viewerMode === 'client';
   const [selectedStatus, setSelectedStatus] = useState<TicketStatus>(
     FLIPPABLE_STATUSES.includes(currentStatus) ? currentStatus : 'open',
   );
@@ -121,7 +126,7 @@ export function TicketActions({ ticketId, currentStatus }: Props) {
 
   return (
     <div className="bg-white rounded-lg shadow p-4 space-y-4">
-      <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Agent actions</h2>
+      <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">{isClient ? 'Actions' : 'Agent actions'}</h2>
 
       <div>
         <label className="block text-xs text-gray-600 mb-1">Update status</label>
@@ -150,11 +155,11 @@ export function TicketActions({ ticketId, currentStatus }: Props) {
       </div>
 
       <div>
-        <label className="block text-xs text-gray-600 mb-1">Reply to customer</label>
+        <label className="block text-xs text-gray-600 mb-1">{isClient ? 'Reply' : 'Reply to customer'}</label>
         <textarea
           value={replyBody}
           onChange={(e) => setReplyBody(e.target.value)}
-          placeholder="Customer-visible reply (will appear on the ticket)"
+          placeholder={isClient ? 'Add a reply to this ticket' : 'Customer-visible reply (will appear on the ticket)'}
           rows={3}
           disabled={replyBusy}
           className="w-full border border-gray-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
@@ -173,6 +178,9 @@ export function TicketActions({ ticketId, currentStatus }: Props) {
         </div>
       </div>
 
+      {/* Internal note — AGENT ONLY (S6). Never render for a client viewer:
+          it's a staff-eyes-only channel and the box must not be reachable. */}
+      {!isClient && (
       <div>
         <label className="block text-xs text-gray-600 mb-1">Add internal note</label>
         <textarea
@@ -196,6 +204,7 @@ export function TicketActions({ ticketId, currentStatus }: Props) {
           {noteErr && <span className="text-xs text-red-600">{noteErr}</span>}
         </div>
       </div>
+      )}
     </div>
   );
 }

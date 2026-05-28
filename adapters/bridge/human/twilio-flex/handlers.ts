@@ -414,18 +414,22 @@ export async function onTicketRepliedCustomer(
 // /api/email-inbound's design comment (line ~78) assumed PP would fire .customer
 // — that assumption is empirically wrong for our Foundation 50k tier.
 //
-// This handler subscribes to ticket.replied.agent + filters to reply.source ===
-// 'email' (set by /api/email-inbound on addReply). Treats those as customer
-// replies for the Flex notification path. Non-email-sourced .agent replies are
-// genuine agent canvas replies and skip this handler.
+// This handler subscribes to ticket.replied.agent + filters to CUSTOMER-
+// originated replies: source==='email' (set by /api/email-inbound) OR
+// source==='client' (S7 — set by the portal client-view Reply box via
+// /api/bridge/twilio-flex/customer-reply with fromClient=true). Both are the
+// customer talking, even though Perfex's staff-auth API fires them as .agent.
+// They flow through bump/reopen so they reach the CCT agent. Genuine agent
+// canvas replies (source==='flex') are skipped — onTicketRepliedAgent observes
+// those, and they're emailed to the customer by the customer-email adapter.
 export async function onTicketRepliedAgentFromEmail(
   event: Extract<CoreEvent, { kind: 'ticket.replied.agent' }>,
   twilio: TwilioClient,
   deployment?: DeploymentConfig,
 ): Promise<void> {
-  if (event.reply.source !== 'email') {
-    // Not an email-sourced reply — genuine agent canvas reply. Skip; the
-    // onTicketRepliedAgent observer handles those.
+  const src = event.reply.source;
+  if (src !== 'email' && src !== 'client') {
+    // Agent canvas reply (source 'flex') — not customer-originated. Skip.
     return;
   }
   await bumpTaskAttributesForReply(event.ticketId, event.reply, twilio, 'onTicketRepliedAgentFromEmail', deployment);

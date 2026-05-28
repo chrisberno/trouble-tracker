@@ -83,7 +83,11 @@ export function TicketActions({ ticketId, currentStatus, viewerMode = 'agent' }:
       const res = await fetch('/api/bridge/twilio-flex/customer-reply', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticketId, body: replyBody }),
+        // S7: when a CLIENT replies from the portal view, flag it so the route
+        // tags the reply source='client' (customer-originated). It then flows
+        // through the reopen/notify pipeline (reaches CCT) instead of the agent
+        // path, and does NOT email the customer their own words.
+        body: JSON.stringify({ ticketId, body: replyBody, fromClient: isClient }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {

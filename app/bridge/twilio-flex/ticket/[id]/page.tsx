@@ -21,6 +21,7 @@ import { TicketActions } from './TicketActions';
 import { checkIframeOrigin } from '../../../_lib/iframe-gate';
 import { IframeBlocker } from '../../../_lib/iframe-blocker';
 import { BackButton } from '../../../_lib/back-button';
+import { listTicketReplies, type TicketReplyRecord } from '@/adapters/bridge/human/twilio-flex/bridge-db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -58,6 +59,40 @@ function PriorityBadge({ priority }: { priority: Ticket['priority'] }) {
     <span className={`px-2 py-0.5 rounded text-xs font-medium ${colorMap[priority]}`}>
       {priority}
     </span>
+  );
+}
+
+// S7 C2: render the captured reply thread. `source` drives label + privacy
+// (author_kind is unreliable under staff-auth): email/client = Customer,
+// flex = Connie Care Team, flex-internal/internalNote = Internal note.
+// Internal notes are filtered out BEFORE this component for the client view.
+function ReplyThread({ replies }: { replies: TicketReplyRecord[] }) {
+  return (
+    <div className="bg-white rounded-lg shadow p-4">
+      <h2 className="text-sm font-semibold text-gray-700 mb-3 uppercase tracking-wide">Conversation</h2>
+      {replies.length === 0 ? (
+        <p className="text-gray-400 text-sm">No replies yet.</p>
+      ) : (
+        <div className="space-y-3">
+          {replies.map((r) => {
+            const isInternal = r.internalNote || r.source === 'flex-internal';
+            const isCustomer = r.source === 'email' || r.source === 'client';
+            const label = isInternal ? 'Internal note' : isCustomer ? 'Customer' : 'Connie Care Team';
+            const labelColor = isInternal ? 'text-amber-700' : isCustomer ? 'text-gray-700' : 'text-blue-700';
+            const cardBg = isInternal ? 'bg-amber-50 border-amber-200' : isCustomer ? 'bg-gray-50 border-gray-200' : 'bg-blue-50 border-blue-200';
+            return (
+              <div key={r.replyId} className={`border rounded-lg p-3 ${cardBg}`}>
+                <div className="flex items-center justify-between mb-1">
+                  <span className={`text-xs font-semibold ${labelColor}`}>{label}</span>
+                  <span className="text-xs text-gray-400">{new Date(r.createdAt).toLocaleString()}</span>
+                </div>
+                <p className="text-sm text-gray-800 whitespace-pre-wrap">{r.body || '(no content)'}</p>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -100,6 +135,18 @@ export default async function TicketContextPage({ params, searchParams }: PagePr
 
   // PP.app admin tenant URL for the escape-hatch link (supervisor edge cases).
   const ppAdminUrl = `${connieConfig.tenantUrl.replace(/\/$/, '')}/admin/tickets/${encodeURIComponent(ticket.id)}`;
+
+  // S7 C2: the captured reply thread (bridge-db — PP's API can't read replies).
+  // Client view NEVER sees internal notes — filtered here before render.
+  let replies: TicketReplyRecord[] = [];
+  try {
+    const all = await listTicketReplies(ticketId);
+    replies = viewerMode === 'client'
+      ? all.filter((r) => !(r.internalNote || r.source === 'flex-internal'))
+      : all;
+  } catch {
+    replies = [];
+  }
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -154,6 +201,9 @@ export default async function TicketContextPage({ params, searchParams }: PagePr
           <h2 className="text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">Description</h2>
           <p className="text-gray-800 whitespace-pre-wrap text-sm">{ticket.description || '(no description)'}</p>
         </div>
+
+        {/* Conversation thread (S7 C2) — captured replies, client-filtered above */}
+        <ReplyThread replies={replies} />
 
         {/* Action footer (client component) */}
         <TicketActions

@@ -20,6 +20,7 @@ import {
   onTicketRepliedAgentFromEmail,
   onTicketRepliedCustomer,
 } from './handlers';
+import { captureTicketReply } from './bridge-db';
 
 let registered = false;
 
@@ -36,6 +37,35 @@ export function register(config: TwilioBridgeConfig, deployment?: DeploymentConf
   registered = true;
 
   const twilio = buildTwilioClient(config);
+
+  // S7 C2: capture EVERY reply into bridge-db so the ticket view can render the
+  // conversation thread — Perfex's API can ADD replies but can't READ them back
+  // (verified live + docs). Always-on, independent of the Flex-notification
+  // flag. `source` is the display/privacy signal (author_kind is unreliable
+  // under staff-auth): email/client = customer, flex = agent, flex-internal =
+  // internal note (filtered from the client view downstream).
+  subscribe(['ticket.replied.agent', 'ticket.replied.customer'], async (event) => {
+    if (event.kind !== 'ticket.replied.agent' && event.kind !== 'ticket.replied.customer') return;
+    const r = event.reply;
+    try {
+      await captureTicketReply({
+        ticketId: event.ticketId,
+        replyId: String(r.id),
+        body: r.body ?? '',
+        authorKind: r.authorKind ?? '',
+        source: r.source ?? null,
+        internalNote: r.internalNote === true || r.source === 'flex-internal',
+        createdAt: r.createdAt ?? new Date().toISOString(),
+      });
+    } catch (err) {
+      console.warn(JSON.stringify({
+        bridge: 'twilio-flex',
+        info: 'ticket reply capture failed (non-fatal)',
+        ticketId: event.ticketId,
+        error: err instanceof Error ? err.message : String(err),
+      }));
+    }
+  });
 
   subscribe(['ticket.created'], async (event) => {
     if (event.kind !== 'ticket.created') return;

@@ -241,3 +241,75 @@ export async function tryClaimBridgeKey(key: string): Promise<boolean> {
   `;
   return (result.rowCount ?? 0) > 0;
 }
+
+// ============================================================================
+// Ticket reply thread (S7 C2)
+//
+// Perfex/PeoplePerson's REST API can ADD replies but has NO endpoint to READ
+// them back (verified live + against the official API docs 2026-05-28). So the
+// only way to render a conversation thread in the ticket view is to capture
+// every reply ourselves as PP's ticket.replied.* webhook fires, into this
+// table. Forward-looking: replies from the capture-deploy onward are stored;
+// pre-existing replies are unrecoverable (PP won't return them).
+//
+// `source` is the load-bearing display + privacy signal (NOT author_kind, which
+// is unreliable because pp-client uses staff-auth so customer replies arrive as
+// .agent). Mapping: 'email'/'client' = customer; 'flex' = agent reply;
+// 'flex-internal' = internal note (agent-eyes-only — filtered from client view).
+// ============================================================================
+
+export interface TicketReplyRecord {
+  ticketId: string;
+  replyId: string;
+  body: string;
+  authorKind: string;
+  source: string | null;
+  internalNote: boolean;
+  createdAt: string;
+}
+
+export async function initTicketRepliesTable(): Promise<void> {
+  await sql`
+    CREATE TABLE IF NOT EXISTS ticket_replies (
+      ticket_id TEXT NOT NULL,
+      reply_id TEXT NOT NULL,
+      body TEXT,
+      author_kind TEXT,
+      source TEXT,
+      internal_note BOOLEAN DEFAULT FALSE,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (ticket_id, reply_id)
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS ticket_replies_ticket_id_idx ON ticket_replies(ticket_id)`;
+}
+
+// Idempotent on (ticket_id, reply_id) — safe against webhook double-fire.
+export async function captureTicketReply(r: TicketReplyRecord): Promise<void> {
+  if (!r.ticketId || !r.replyId) return;
+  await initTicketRepliesTable();
+  await sql`
+    INSERT INTO ticket_replies (ticket_id, reply_id, body, author_kind, source, internal_note, created_at)
+    VALUES (${r.ticketId}, ${r.replyId}, ${r.body}, ${r.authorKind}, ${r.source}, ${r.internalNote}, ${r.createdAt})
+    ON CONFLICT (ticket_id, reply_id) DO NOTHING
+  `;
+}
+
+export async function listTicketReplies(ticketId: string): Promise<TicketReplyRecord[]> {
+  await initTicketRepliesTable();
+  const result = await sql`
+    SELECT ticket_id, reply_id, body, author_kind, source, internal_note, created_at
+    FROM ticket_replies
+    WHERE ticket_id = ${ticketId}
+    ORDER BY created_at ASC
+  `;
+  return result.rows.map((row) => ({
+    ticketId: row.ticket_id as string,
+    replyId: row.reply_id as string,
+    body: (row.body as string | null) ?? '',
+    authorKind: (row.author_kind as string | null) ?? '',
+    source: (row.source as string | null) ?? null,
+    internalNote: row.internal_note === true,
+    createdAt: (row.created_at as Date | string).toString(),
+  }));
+}

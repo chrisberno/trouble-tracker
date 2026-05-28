@@ -33,7 +33,8 @@
 // Handlers are exported individually so register.ts can wire them to specific
 // CoreEvent kinds via pp-client's subscribe() surface.
 
-import type { CoreEvent } from '@/pp-client/types';
+import type { CoreEvent, Ticket, Reply, DeploymentConfig } from '@/pp-client/types';
+import { getTicket, reopenTicket } from '@/pp-client';
 import type { TwilioClient } from './twilio-client';
 import {
   upsertBridgeMapping,
@@ -401,8 +402,9 @@ export async function onTicketRepliedAgent(
 export async function onTicketRepliedCustomer(
   event: Extract<CoreEvent, { kind: 'ticket.replied.customer' }>,
   twilio: TwilioClient,
+  deployment?: DeploymentConfig,
 ): Promise<void> {
-  await bumpTaskAttributesForReply(event.ticketId, event.reply, twilio, 'onTicketRepliedCustomer');
+  await bumpTaskAttributesForReply(event.ticketId, event.reply, twilio, 'onTicketRepliedCustomer', deployment);
 }
 
 // Sprint 4.0 Task 7 (2026-05-27): email-sourced customer replies arrive as
@@ -419,81 +421,289 @@ export async function onTicketRepliedCustomer(
 export async function onTicketRepliedAgentFromEmail(
   event: Extract<CoreEvent, { kind: 'ticket.replied.agent' }>,
   twilio: TwilioClient,
+  deployment?: DeploymentConfig,
 ): Promise<void> {
   if (event.reply.source !== 'email') {
     // Not an email-sourced reply — genuine agent canvas reply. Skip; the
     // onTicketRepliedAgent observer handles those.
     return;
   }
-  await bumpTaskAttributesForReply(event.ticketId, event.reply, twilio, 'onTicketRepliedAgentFromEmail');
+  await bumpTaskAttributesForReply(event.ticketId, event.reply, twilio, 'onTicketRepliedAgentFromEmail', deployment);
 }
 
-// Shared helper: read current task attributes, merge in the new-reply markers,
-// write back. Extracted 2026-05-27 so both onTicketRepliedCustomer (native PP
-// customer replies — e.g. if a future deployment auths PP differently) AND
-// onTicketRepliedAgentFromEmail (email-sourced, the actual production path)
-// can share the bump logic.
+// Shared helper for customer replies. Two paths:
+//   1. LIVE task  → read-merge-write the new-reply markers (the S5 bump). UNCHANGED.
+//   2. NO live task (completed/canceled/gone) → S6 reopen: reopen the ticket and
+//      mint a fresh task so the reply actually reaches an agent. Reopens are the
+//      COMMON case for async email round-trips, not the edge.
+// Called by onTicketRepliedCustomer (native) and onTicketRepliedAgentFromEmail
+// (email-sourced, the production path). deployment is required to take the
+// reopen path (pp-client getTicket/reopenTicket); absent = pre-S6 behavior.
 async function bumpTaskAttributesForReply(
   ticketId: string,
-  reply: import('@/pp-client/types').Reply,
+  reply: Reply,
   twilio: TwilioClient,
   handlerName: string,
+  deployment?: DeploymentConfig,
 ): Promise<void> {
-  // Look up the bound Twilio task. If no mapping, the customer reply is on a
-  // ticket that doesn't have a Flex task (intake never created one, or the
-  // task has been closed and the mapping torn down). Logged + no-op.
   const mapping = await getBridgeMappingByTicketId(ticketId);
-  if (!mapping?.taskSid) {
+
+  // One getTaskAttributes call decides liveness AND serves as the read side of
+  // the live-task read-merge-write below.
+  let current: Record<string, unknown> | null = null;
+  let assignmentStatus: string | undefined;
+  let workerSid: string | undefined;
+  let liveTask = false;
+  if (mapping?.taskSid) {
+    try {
+      const res = await twilio.getTaskAttributes(mapping.taskSid);
+      current = res.attributes;
+      assignmentStatus = res.assignmentStatus;
+      workerSid = res.workerSid;
+      // Terminal tasks can't be updated and aren't in any agent's Flex client.
+      liveTask = assignmentStatus !== 'completed' && assignmentStatus !== 'canceled';
+    } catch {
+      // GET failed (task deleted / 404 after TaskRouter GC) → not live.
+      liveTask = false;
+    }
+  }
+
+  // --- LIVE task: existing S5 bump (read-merge-write). Behavior UNCHANGED. ---
+  if (mapping?.taskSid && liveTask && current) {
+    try {
+      const merged: Record<string, unknown> = {
+        ...current,
+        ticketHasNewReply: true,
+        lastCustomerReplyAt: new Date().toISOString(),
+        lastCustomerReplyId: reply.id,
+      };
+      await twilio.updateTaskAttributes({
+        taskSid: mapping.taskSid,
+        attributes: merged,
+      });
+      console.log(JSON.stringify({
+        bridge: 'twilio-flex',
+        handler: handlerName,
+        ok: true,
+        action: 'bumped-live-task',
+        ticketId,
+        replyId: reply.id,
+        taskSid: mapping.taskSid,
+        assignmentStatus,
+        workerSid,
+        replySource: reply.source ?? 'customer-direct',
+      }));
+    } catch (err) {
+      console.warn(JSON.stringify({
+        bridge: 'twilio-flex',
+        handler: handlerName,
+        warning: 'attribute bump failed; reply still visible in iframe',
+        ticketId,
+        replyId: reply.id,
+        taskSid: mapping.taskSid,
+        error: err instanceof Error ? err.message : String(err),
+      }));
+    }
+    return;
+  }
+
+  // --- NO live task: S6 reopen path. ---
+  if (!deployment) {
+    // Pre-S6 fallback: reply stays durable in PP, no proactive surfacing.
     console.log(JSON.stringify({
       bridge: 'twilio-flex',
       handler: handlerName,
-      info: 'no bound task; skipping attribute bump',
+      info: 'no live task and reopen disabled (no deployment config); reply durable in PP only',
       ticketId,
       replyId: reply.id,
     }));
     return;
   }
-
-  // Read-merge-write. TaskRouter POST /Tasks/{sid} Attributes is full-replace;
-  // partial writes would wipe load-bearing fields (deploymentId, customerScope,
-  // etc.). Race window between get and put is ~200ms with effectively zero
-  // concurrent-write rate per task — acceptable for v1.
   try {
-    const { attributes: current, assignmentStatus, workerSid } =
-      await twilio.getTaskAttributes(mapping.taskSid);
-    const merged: Record<string, unknown> = {
-      ...current,
-      ticketHasNewReply: true,
-      lastCustomerReplyAt: new Date().toISOString(),
-      lastCustomerReplyId: reply.id,
-    };
-    await twilio.updateTaskAttributes({
-      taskSid: mapping.taskSid,
-      attributes: merged,
-    });
-    console.log(JSON.stringify({
-      bridge: 'twilio-flex',
-      handler: handlerName,
-      ok: true,
-      ticketId,
-      replyId: reply.id,
-      taskSid: mapping.taskSid,
-      assignmentStatus,
-      workerSid,
-      replySource: reply.source ?? 'customer-direct',
-    }));
+    await createReopenTask(ticketId, reply, twilio, deployment, mapping?.customerScope ?? null);
   } catch (err) {
-    // Non-fatal — log + continue. The reply itself is durable in PP; failure
-    // to mirror the flag into task.attributes only means the agent misses the
-    // proactive surface but can still see the reply in the canvas iframe.
     console.warn(JSON.stringify({
       bridge: 'twilio-flex',
       handler: handlerName,
-      warning: 'attribute bump failed; reply still visible in iframe',
+      warning: 'reopen task creation failed; reply still durable in PP',
       ticketId,
       replyId: reply.id,
-      taskSid: mapping.taskSid,
       error: err instanceof Error ? err.message : String(err),
     }));
   }
+}
+
+// S6 (2026-05-28): reopen path. Deliberately SELF-CONTAINED — mirrors
+// onTicketCreated's Pattern B chain rather than sharing an extracted helper, so
+// the proven create path stays byte-for-byte untouched (zero-regression mandate).
+// DRY-up is an S6 fast-follow. Idempotency keys are suffixed with reopen+replyId
+// so they never collide with the original create's keys for the same ticketId.
+async function createReopenTask(
+  ticketId: string,
+  reply: Reply,
+  twilio: TwilioClient,
+  deployment: DeploymentConfig,
+  scopeFromMapping: string | null,
+): Promise<void> {
+  const replyId = String(reply.id);
+
+  // Atomic claim — a given reply reopens at most once even on webhook double-fire.
+  // Same orphan-over-duplicate trade-off as onTicketCreated's claim-at-entry.
+  const claimKey = `twilio:reopen:${ticketId}:${replyId}`;
+  if (!(await tryClaimBridgeKey(claimKey))) {
+    console.log(JSON.stringify({
+      bridge: 'twilio-flex',
+      handler: 'createReopenTask',
+      info: 'duplicate reopen skipped',
+      ticketId,
+      replyId,
+    }));
+    return;
+  }
+
+  const ticket: Ticket = await getTicket(ticketId, deployment);
+
+  // Scope: bridge-db is authoritative (TTB-17 — PP GET doesn't return
+  // custom_fields). Prefer the mapping's scope, fall back to the ticket's.
+  const effectiveScope =
+    (scopeFromMapping && scopeFromMapping.trim()) ||
+    (ticket.customerScope && ticket.customerScope.trim()) ||
+    '';
+
+  // Reopen the PP ticket ONLY if actually closed — don't downgrade a ticket
+  // that's still open/in_progress/waiting.
+  if (ticket.status === 'closed') {
+    await reopenTicket(ticketId, deployment);
+  }
+
+  const profileUrl = `https://trouble-ticket-app.vercel.app/bridge/tickets?ticketId=${ticketId}`;
+  const priorityNum = PRIORITY_TO_TASKROUTER[ticket.priority] ?? 5;
+  const customerProxyIdentity = `connie-customer-ticket-${ticketId}`;
+  const conversationFriendlyName = `Ticket #${ticketId} (reopened): ${ticket.subject}`.slice(0, 256);
+
+  // Mirror onTicketCreated's load-bearing attribute set EXACTLY + reopen markers.
+  const taskAttributes = {
+    name: `Support Ticket: ${ticket.subject}`,
+    type: 'support_ticket',
+    skill: 'Support',
+    profile_url: profileUrl,
+    ticketId,
+    title: ticket.subject,
+    description: ticket.description,
+    urgency: ticket.priority,
+    priority: ticket.priority,
+    customerName: ticket.customer.name,
+    customerPhone: ticket.customer.phone ?? '',
+    customerEmail: ticket.customer.email ?? '',
+    customerScope: effectiveScope,
+    customers: {
+      name: ticket.customer.name,
+      phone: ticket.customer.phone ?? '',
+      organization: effectiveScope,
+    },
+    origin: effectiveScope,
+    timestamp: new Date().toISOString(),
+    channel: 'support-ticket',
+    // Unique per reopen — never collides with the original task's key.
+    conversationsTaskKey: `support_ticket_${ticketId}_reopen_${replyId}`,
+    deploymentId: twilio.config.deploymentId,
+    // S6 reopen markers (fast-follow renders a badge from `reopen`).
+    reopen: true,
+    reopenedAt: new Date().toISOString(),
+    ticketHasNewReply: true,
+    lastCustomerReplyAt: new Date().toISOString(),
+    lastCustomerReplyId: reply.id,
+  };
+
+  // Pattern B chain (mirrors onTicketCreated). Reopen-suffixed idempotency keys.
+  const conv = await twilio.createConversation(
+    {
+      friendlyName: conversationFriendlyName,
+      attributes: {
+        ticketId,
+        customerScope: effectiveScope,
+        deploymentId: twilio.config.deploymentId,
+        intakeSource: 'email-reopen',
+      },
+    },
+    `twilio:conv:reopen:${ticketId}:${replyId}`,
+  );
+
+  await twilio.addConversationParticipant(
+    {
+      conversationSid: conv.conversationSid,
+      identity: customerProxyIdentity,
+      attributes: {
+        role: 'customer',
+        name: ticket.customer.name,
+        email: ticket.customer.email ?? '',
+        phone: ticket.customer.phone ?? '',
+        customerScope: effectiveScope,
+      },
+    },
+    `twilio:participant:reopen:${ticketId}:${replyId}`,
+  );
+
+  const firstBody = reply.body?.trim()
+    ? `Customer reply (ticket reopened):\n\n${reply.body}`
+    : `Ticket #${ticketId} was reopened by a customer reply.`;
+  await twilio.postConversationMessage(
+    {
+      conversationSid: conv.conversationSid,
+      body: firstBody,
+      author: customerProxyIdentity,
+    },
+    `twilio:firstmsg:reopen:${ticketId}:${replyId}`,
+  );
+
+  const iframeBase = new URL(twilio.config.iframeBaseUrl);
+  const conversationMessageWebhookUrl =
+    `${iframeBase.origin}/api/bridge/twilio-flex/conversation-message?ticketId=${encodeURIComponent(ticketId)}`;
+  await twilio.addConversationWebhook(
+    {
+      conversationSid: conv.conversationSid,
+      url: conversationMessageWebhookUrl,
+      filters: ['onMessageAdded'],
+      method: 'POST',
+    },
+    `twilio:convwebhook:reopen:${ticketId}:${replyId}`,
+  );
+
+  const interaction = await twilio.createInteraction(
+    {
+      conversationSid: conv.conversationSid,
+      initiatedBy: 'customer',
+      channelType: 'chat',
+      workflowSid: twilio.config.supportWorkflowSid,
+      taskChannelUniqueName: twilio.config.taskChannel,
+      taskAttributes: {
+        ...taskAttributes,
+        priority_number: priorityNum,
+      },
+    },
+    `twilio:interaction:reopen:${ticketId}:${replyId}`,
+  );
+
+  // Re-point the bridge mapping to the NEW task (upsert overwrites task_sid).
+  await upsertBridgeMapping({
+    ticketId,
+    interactionSid: interaction.interactionSid,
+    conversationSid: conv.conversationSid,
+    taskSid: interaction.taskSid,
+    customerScope: effectiveScope || null,
+  });
+
+  console.log(JSON.stringify({
+    bridge: 'twilio-flex',
+    handler: 'createReopenTask',
+    ok: true,
+    action: 'reopened',
+    ticketId,
+    replyId,
+    conversationSid: conv.conversationSid,
+    interactionSid: interaction.interactionSid,
+    taskSid: interaction.taskSid,
+    customerScope: effectiveScope,
+    ppReopened: ticket.status === 'closed',
+  }));
 }

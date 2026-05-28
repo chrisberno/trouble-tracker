@@ -277,7 +277,7 @@ export default async function TicketsListPage({
                   <tr key={t.id} style={{ borderTop: '1px solid #e5e7eb' }}>
                     <td style={{ padding: '10px 14px' }}>
                       <Link
-                        href={`/bridge/twilio-flex/ticket/${encodeURIComponent(t.id)}`}
+                        href={`/bridge/twilio-flex/ticket/${encodeURIComponent(t.id)}?ctx=client`}
                         style={{ color: '#2563eb', textDecoration: 'underline', fontWeight: 500 }}
                       >
                         #{t.id}

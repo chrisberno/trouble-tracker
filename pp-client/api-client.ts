@@ -723,3 +723,12 @@ export async function closeTicket(
 ): Promise<Ticket> {
   return updateStatus(ticketId, 'closed', config);
 }
+
+// S6 (2026-05-28): thin wrapper used by the reopen path when a customer reply
+// lands on a closed ticket. Mirrors closeTicket — sets status back to open.
+export async function reopenTicket(
+  ticketId: string,
+  config: DeploymentConfig,
+): Promise<Ticket> {
+  return updateStatus(ticketId, 'open', config);
+}

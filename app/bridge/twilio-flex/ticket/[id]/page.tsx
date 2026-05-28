@@ -27,6 +27,10 @@ export const dynamic = 'force-dynamic';
 
 interface PageProps {
   params: Promise<{ id: string }>;
+  // S6: connie.plus "Show All" row links carry ?ctx=client. Absent = agent
+  // (the canvas path sends no ctx), which preserves the existing agent view
+  // byte-for-byte. Only the client browse path opts into the trimmed view.
+  searchParams: Promise<{ ctx?: string }>;
 }
 
 function StatusBadge({ status }: { status: Ticket['status'] }) {
@@ -69,7 +73,7 @@ function ErrorState({ title, message, ticketId }: { title: string; message: stri
   );
 }
 
-export default async function TicketContextPage({ params }: PageProps) {
+export default async function TicketContextPage({ params, searchParams }: PageProps) {
   // Iframe-only gate (parallel to /bridge/tickets). Dev bypasses inside helper.
   const gate = await checkIframeOrigin();
   if (!gate.allowed) {
@@ -77,6 +81,8 @@ export default async function TicketContextPage({ params }: PageProps) {
   }
 
   const { id: ticketId } = await params;
+  const { ctx } = await searchParams;
+  const viewerMode: 'agent' | 'client' = ctx === 'client' ? 'client' : 'agent';
 
   let ticket: Ticket;
   try {
@@ -153,19 +159,23 @@ export default async function TicketContextPage({ params }: PageProps) {
         <TicketActions
           ticketId={ticket.id}
           currentStatus={ticket.status}
+          viewerMode={viewerMode}
         />
 
-        {/* Escape hatch */}
-        <div className="text-right">
-          <a
-            href={ppAdminUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-blue-600 hover:text-blue-700 underline"
-          >
-            Open in PP →
-          </a>
-        </div>
+        {/* Escape hatch — AGENT ONLY. S6: brand-firewall — the PP admin link
+            must never render for a client viewer. ctx=client suppresses it. */}
+        {viewerMode === 'agent' && (
+          <div className="text-right">
+            <a
+              href={ppAdminUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-blue-600 hover:text-blue-700 underline"
+            >
+              Open in PP →
+            </a>
+          </div>
+        )}
       </div>
     </div>
   );

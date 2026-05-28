@@ -277,7 +277,14 @@ export default async function TicketsListPage({
                   <tr key={t.id} style={{ borderTop: '1px solid #e5e7eb' }}>
                     <td style={{ padding: '10px 14px' }}>
                       <Link
-                        href={`/bridge/twilio-flex/ticket/${encodeURIComponent(t.id)}?ctx=client`}
+                        // S7 fix: only force the CLIENT view when this list is the
+                        // client BROWSE surface (connie.plus "Show All" → ?customerScope=
+                        // &status=, never carries ticketId). The AGENT reaches this list
+                        // via their active-task CRM container (profile_url =
+                        // /bridge/tickets?ticketId=<id>), so a present ticketId means
+                        // agent context → no ctx → full agent view (sees internal notes).
+                        // Clients never reach the list with ?ticketId=, so privacy holds.
+                        href={`/bridge/twilio-flex/ticket/${encodeURIComponent(t.id)}${requestedTicketId ? '' : '?ctx=client'}`}
                         style={{ color: '#2563eb', textDecoration: 'underline', fontWeight: 500 }}
                       >
                         #{t.id}

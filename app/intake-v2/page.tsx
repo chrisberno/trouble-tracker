@@ -173,12 +173,32 @@ export default function IntakeV2Page() {
                 touch.
               </p>
             </div>
-            <button
-              onClick={resetForm}
-              className="bg-[#0263E0] hover:bg-[#0150B8] text-white font-medium px-6 py-3 rounded-lg transition-colors"
-            >
-              File another ticket
-            </button>
+            <div className="flex flex-wrap gap-3">
+              <button
+                onClick={resetForm}
+                className="bg-[#0263E0] hover:bg-[#0150B8] text-white font-medium px-6 py-3 rounded-lg transition-colors"
+              >
+                File another ticket
+              </button>
+              {customerScope && (
+                <a
+                  href={`/bridge/tickets?customerScope=${encodeURIComponent(customerScope)}&status=all`}
+                  className="inline-flex items-center border border-[#0263E0] text-[#0263E0] hover:bg-blue-50 font-medium px-6 py-3 rounded-lg transition-colors"
+                >
+                  See all my tickets
+                </a>
+              )}
+              <a
+                href={
+                  customerScope
+                    ? `https://connie.plus/?customer_scope=${encodeURIComponent(customerScope)}`
+                    : "https://connie.plus"
+                }
+                className="inline-flex items-center text-gray-600 hover:text-gray-800 hover:bg-gray-100 font-medium px-6 py-3 rounded-lg transition-colors"
+              >
+                Back to Connie
+              </a>
+            </div>
           </div>
         ) : (
           <form

@@ -9,8 +9,13 @@
 // for accessibility and spam-folder hygiene; HTML is what most clients render.
 //
 // Sprint 3.0 C1 (TTB-27, 2026-05-08): polish pass.
-//   - Connie-branded top bar + footer (brand blue, no images — keeps the
-//     email self-contained; no CDN hunt + no off-client load).
+//   - Connie-branded top bar + footer (brand blue).
+// 2026-06-26 (CEO direction): header now carries the white Connie wordmark
+//   (Cloudinary, LOGO_URL) on the left + "Connie Care Team" on the right.
+//   Removed support@connie.team from the HEADER and the connie.plus link from
+//   the footer + plain-text signature. This intentionally reverses the earlier
+//   "no images" choice; alt="Connie" covers image-blocking clients. The body
+//   "Need help?" line still offers support@connie.team and Reply-To is unchanged.
 //   - UTM tagging on outbound homepage links so email-driven traffic shows
 //     up cleanly in connie.plus analytics.
 //   - Soften the reply-hint copy. Reply-To routes to support@connie.team
@@ -29,11 +34,12 @@
 import type { Ticket } from '@/pp-client/types';
 
 const SUPPORT_EMAIL = 'support@connie.team';
-const HOMEPAGE_URL = 'https://connie.plus';
-const HOMEPAGE_URL_TAGGED = `${HOMEPAGE_URL}?utm_source=email&utm_medium=ticket-update`;
+// Connie wordmark (white, transparent), hosted on Cloudinary. Cloudinary applies
+// the resize (h_80,c_fit) so the header logo stays crisp on retina displays.
+const LOGO_URL =
+  'https://res.cloudinary.com/doa8o9alh/image/upload/h_80,c_fit/v1769819550/connie-logo-white-v1-thin-deja-Vu-Sans_uzlq7c.png';
 
 const BRAND_BLUE = '#2563eb';
-const BRAND_BLUE_DARK = '#1d4ed8';
 const TEXT_PRIMARY = '#111827';
 const TEXT_BODY = '#1f2937';
 const TEXT_MUTED = '#4b5563';
@@ -70,7 +76,6 @@ export function renderTicketCreatedEmail(ticket: Ticket): TicketCreatedEmail {
     `Need help in the meantime? Email ${SUPPORT_EMAIL}.`,
     '',
     '— Connie Care Team',
-    HOMEPAGE_URL,
   ].join('\n');
 
   const htmlBody = renderHtml({
@@ -119,7 +124,6 @@ export function renderAgentReplyEmail(args: {
     `To respond, just reply to this email — it will reach our team.`,
     '',
     `— Connie Care Team`,
-    HOMEPAGE_URL,
   ].join('\n');
 
   const htmlBody = renderHtml({
@@ -170,8 +174,8 @@ function renderHtml(a: HtmlRenderArgs): string {
           <td style="background:${BRAND_BLUE};padding:16px 24px;">
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
               <tr>
-                <td style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;color:#ffffff;font-size:14px;font-weight:600;letter-spacing:0.3px;">Connie Care Team</td>
-                <td align="right" style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;color:#dbeafe;font-size:12px;">support@connie.team</td>
+                <td align="left" valign="middle" style="width:180px;"><img src="${LOGO_URL}" alt="Connie" height="40" style="display:block;height:40px;width:auto;border:0;"></td>
+                <td align="right" valign="middle" style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;color:#ffffff;font-size:16px;font-weight:700;letter-spacing:0.3px;">Connie Care Team</td>
               </tr>
             </table>
           </td>
@@ -189,8 +193,7 @@ function renderHtml(a: HtmlRenderArgs): string {
           <td style="padding:0 24px 24px 24px;">
             <hr style="border:none;border-top:1px solid ${BORDER_LIGHT};margin:0 0 16px 0;">
             <p style="margin:0;font-size:12px;color:${TEXT_SUBTLE};line-height:1.5;">
-              — Connie Care Team<br>
-              <a href="${HOMEPAGE_URL_TAGGED}" style="color:${BRAND_BLUE_DARK};text-decoration:none;">${HOMEPAGE_URL}</a>
+              — Connie Care Team
             </p>
           </td>
         </tr>

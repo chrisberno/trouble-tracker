@@ -17,6 +17,7 @@
 //   - *.connie.team (all Connie tenant subdomains)
 //   - flex.twilio.com + *.flex.twilio.com (CCT WorkBench task pane)
 //   - *.twilio.com / *.twil.io (Flex variants)
+//   - nss|hhovv|lifeline|careteam.threadconnect.com (ThreadConnect hosts)
 //
 // Development bypass: when NODE_ENV !== 'production', always allowed.
 // Local `npm run dev` works without faking a Referer header.
@@ -30,6 +31,8 @@ const ALLOWED_HOSTS: RegExp[] = [
   /^[a-z0-9-]+\.flex\.twilio\.com$/,
   /^[a-z0-9-]+\.twilio\.com$/,
   /^[a-z0-9-]+\.twil\.io$/,
+  // ThreadConnect tenant hosts (2026-10-08) — explicit, mirrors vercel.json
+  /^(nss|hhovv|lifeline|careteam)\.threadconnect\.com$/,
 ];
 
 export type IframeGateResult =

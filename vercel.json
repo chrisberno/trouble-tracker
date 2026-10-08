@@ -5,7 +5,7 @@
       "headers": [
         {
           "key": "Content-Security-Policy",
-          "value": "frame-ancestors 'self' https://flex.twilio.com https://*.flex.twilio.com https://*.twilio.com https://*.twil.io https://connie.team https://*.connie.team https://dev.connie.team https://portal.connie.team https://test1.connie.team https://test2.connie.team https://test3.connie.team"
+          "value": "frame-ancestors 'self' https://flex.twilio.com https://*.flex.twilio.com https://*.twilio.com https://*.twil.io https://connie.team https://*.connie.team https://dev.connie.team https://portal.connie.team https://test1.connie.team https://test2.connie.team https://test3.connie.team https://nss.threadconnect.com https://hhovv.threadconnect.com https://lifeline.threadconnect.com https://careteam.threadconnect.com"
         },
         {
           "key": "X-Frame-Options",

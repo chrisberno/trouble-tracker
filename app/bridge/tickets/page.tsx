@@ -45,10 +45,15 @@ interface SearchParamsShape {
   customerScope?: string;
   status?: string;
   ticketId?: string;
+  limit?: string;
 }
 
 const DEFAULT_LIMIT = 50;
 const FETCH_BATCH = 12;
+// "Load more" (2026-10-16): each click adds LIMIT_STEP per client scope, up to MAX_LIMIT
+// (hydration cost grows with it: ~0.5 s per batch of 12, maxDuration 30 s).
+const LIMIT_STEP = 50;
+const MAX_LIMIT = 200;
 
 const ALLOWED_SCOPES = new Set(config.customerScopes.map((c) => c.scope));
 // CareTeam (the ThreadConnect support desk) serves every client tenant, so its
@@ -145,6 +150,11 @@ export default async function TicketsListPage({
     : undefined;
   const isAggregate = customerScope === AGGREGATE_SCOPE;
   const clientById = new Map<string, string>();
+  const parsedLimit = parseInt((params.limit ?? '').trim(), 10);
+  const limit = Number.isFinite(parsedLimit)
+    ? Math.min(MAX_LIMIT, Math.max(DEFAULT_LIMIT, Math.round(parsedLimit / LIMIT_STEP) * LIMIT_STEP))
+    : DEFAULT_LIMIT;
+  let hitCap = false;
   const requestedStatus = (params.status ?? '').trim().toLowerCase();
   const activeStatus: StatusFilter = isStatusFilter(requestedStatus) ? requestedStatus : 'open';
   const statusFilter = activeStatus === 'all' ? undefined : activeStatus;
@@ -165,14 +175,16 @@ export default async function TicketsListPage({
       if (isAggregate) {
         const perScope = await Promise.all(
           Array.from(ALLOWED_SCOPES).map(async (sc) => {
-            const scIds = await listTicketIdsByScope(sc, DEFAULT_LIMIT);
+            const scIds = await listTicketIdsByScope(sc, limit);
+            if (scIds.length >= limit) hitCap = true;
             scIds.forEach((id) => clientById.set(String(id), sc));
             return scIds;
           }),
         );
         ids = Array.from(new Set(perScope.flat()));
       } else {
-        ids = await listTicketIdsByScope(customerScope, DEFAULT_LIMIT);
+        ids = await listTicketIdsByScope(customerScope, limit);
+        if (ids.length >= limit) hitCap = true;
       }
       // 2026-10-16: fetching every ticket at once (up to 150 for CareTeam) made PP
       // fail a random share of calls, and each failure silently dropped a row
@@ -233,6 +245,7 @@ export default async function TicketsListPage({
                 const linkParams = new URLSearchParams();
                 linkParams.set('customerScope', customerScope);
                 linkParams.set('status', s);
+                if (limit !== DEFAULT_LIMIT) linkParams.set('limit', String(limit));
                 if (requestedTicketId) linkParams.set('ticketId', requestedTicketId);
                 return (
                   <Link
@@ -343,11 +356,24 @@ export default async function TicketsListPage({
                 ))}
               </tbody>
             </table>
-            {tickets.length === DEFAULT_LIMIT && (
-              <div style={{ padding: '10px 14px', backgroundColor: '#f9fafb', fontSize: '12px', color: '#6b7280', textAlign: 'center', borderTop: '1px solid #e5e7eb' }}>
-                Showing first {DEFAULT_LIMIT}. Refine scope or visit PP admin for the full set.
-              </div>
-            )}
+            {hitCap && customerScope && (() => {
+              const more = new URLSearchParams();
+              more.set('customerScope', customerScope);
+              more.set('status', activeStatus);
+              if (requestedTicketId) more.set('ticketId', requestedTicketId);
+              more.set('limit', String(Math.min(MAX_LIMIT, limit + LIMIT_STEP)));
+              return (
+                <div style={{ padding: '14px', textAlign: 'center', borderTop: '1px solid #e5e7eb' }}>
+                  {limit < MAX_LIMIT ? (
+                    <Link href={`/bridge/tickets?${more.toString()}`} style={{ display: 'inline-block', padding: '8px 18px', borderRadius: '999px', backgroundColor: '#e5e7eb', color: '#374151', fontSize: '14px', fontWeight: 500, textDecoration: 'none' }}>
+                      Load more (showing the newest {limit}{isAggregate ? ' per client' : ''})
+                    </Link>
+                  ) : (
+                    <span style={{ color: '#6b7280', fontSize: '13px' }}>Showing the newest {MAX_LIMIT}{isAggregate ? ' per client' : ''}. Older tickets: search by ticket number.</span>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         )}
       </div>

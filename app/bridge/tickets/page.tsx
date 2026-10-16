@@ -48,6 +48,12 @@ interface SearchParamsShape {
 const DEFAULT_LIMIT = 50;
 
 const ALLOWED_SCOPES = new Set(config.customerScopes.map((c) => c.scope));
+// CareTeam (the ThreadConnect support desk) serves every client tenant, so its
+// "Show All Tickets" asks for this aggregate scope: the union of every
+// ALLOWED_SCOPES list, with a Client column. Guard today = the same iframe gate
+// as every /bridge page (a deterrent, not security). Signed CareTeam-only token
+// is the follow-up before outside nonprofits get logins (2026-10-16 CEO ruling).
+const AGGREGATE_SCOPE = 'CareTeam';
 
 const STATUS_FILTERS = ['all', 'open', 'in_progress', 'waiting', 'resolved', 'closed'] as const;
 type StatusFilter = (typeof STATUS_FILTERS)[number];
@@ -131,9 +137,11 @@ export default async function TicketsListPage({
   }
 
   const requestedScope = scopeFromTicketId ?? (params.customerScope ?? '').trim();
-  const customerScope = requestedScope && ALLOWED_SCOPES.has(requestedScope)
+  const customerScope = requestedScope && (ALLOWED_SCOPES.has(requestedScope) || requestedScope === AGGREGATE_SCOPE)
     ? requestedScope
     : undefined;
+  const isAggregate = customerScope === AGGREGATE_SCOPE;
+  const clientById = new Map<string, string>();
   const requestedStatus = (params.status ?? '').trim().toLowerCase();
   const activeStatus: StatusFilter = isStatusFilter(requestedStatus) ? requestedStatus : 'open';
   const statusFilter = activeStatus === 'all' ? undefined : activeStatus;
@@ -149,7 +157,19 @@ export default async function TicketsListPage({
       // Bridge-db owns the ticketId→scope index (TTB-17). Fetch IDs first,
       // then hydrate each from PP. Errors on individual fetches drop the row
       // rather than failing the whole page.
-      const ids = await listTicketIdsByScope(customerScope, DEFAULT_LIMIT);
+      let ids: string[];
+      if (isAggregate) {
+        const perScope = await Promise.all(
+          Array.from(ALLOWED_SCOPES).map(async (sc) => {
+            const scIds = await listTicketIdsByScope(sc, DEFAULT_LIMIT);
+            scIds.forEach((id) => clientById.set(String(id), sc));
+            return scIds;
+          }),
+        );
+        ids = Array.from(new Set(perScope.flat()));
+      } else {
+        ids = await listTicketIdsByScope(customerScope, DEFAULT_LIMIT);
+      }
       const fetched = await Promise.all(
         ids.map(async (id) => {
           try {
@@ -179,7 +199,7 @@ export default async function TicketsListPage({
 
   // Defensive: when scope is missing OR fails validation, the empty-state
   // copy below makes that explicit instead of misleadingly reading "All scopes".
-  const headingScope = customerScope
+  const headingScope = isAggregate ? 'All clients (CareTeam)' : customerScope
     ?? (requestedScope ? `Unknown (${requestedScope})` : 'Not specified');
 
   return (
@@ -268,6 +288,7 @@ export default async function TicketsListPage({
                   <th style={{ padding: '10px 14px', fontWeight: 600, color: '#374151' }}>#</th>
                   <th style={{ padding: '10px 14px', fontWeight: 600, color: '#374151' }}>Subject</th>
                   <th style={{ padding: '10px 14px', fontWeight: 600, color: '#374151' }}>Status</th>
+                  {isAggregate && <th style={{ padding: '10px 14px', fontWeight: 600, color: '#374151' }}>Client</th>}
                   <th style={{ padding: '10px 14px', fontWeight: 600, color: '#374151' }}>Customer</th>
                   <th style={{ padding: '10px 14px', fontWeight: 600, color: '#374151' }}>Updated</th>
                 </tr>
@@ -284,7 +305,8 @@ export default async function TicketsListPage({
                         // /bridge/tickets?ticketId=<id>), so a present ticketId means
                         // agent context → no ctx → full agent view (sees internal notes).
                         // Clients never reach the list with ?ticketId=, so privacy holds.
-                        href={`/bridge/twilio-flex/ticket/${encodeURIComponent(t.id)}${requestedTicketId ? '' : '?ctx=client'}`}
+                        // CareTeam's all-clients list is an AGENT surface (sees internal notes).
+                        href={`/bridge/twilio-flex/ticket/${encodeURIComponent(t.id)}${requestedTicketId || isAggregate ? '' : '?ctx=client'}`}
                         style={{ color: '#2563eb', textDecoration: 'underline', fontWeight: 500 }}
                       >
                         #{t.id}
@@ -292,6 +314,7 @@ export default async function TicketsListPage({
                     </td>
                     <td style={{ padding: '10px 14px', color: '#111827' }}>{t.subject || '(no subject)'}</td>
                     <td style={{ padding: '10px 14px' }}><StatusPill status={t.status} /></td>
+                    {isAggregate && <td style={{ padding: '10px 14px', color: '#374151' }}>{clientById.get(String(t.id)) ?? ''}</td>}
                     <td style={{ padding: '10px 14px', color: '#374151' }}>{t.customer.name}</td>
                     <td style={{ padding: '10px 14px', color: '#6b7280', fontSize: '13px' }}>
                       {new Date(t.updatedAt).toLocaleString()}

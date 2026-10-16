@@ -38,6 +38,8 @@ import { BackButton } from '../_lib/back-button';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+// Batched ticket hydration (CareTeam = up to 150 tickets) needs headroom over the default.
+export const maxDuration = 30;
 
 interface SearchParamsShape {
   customerScope?: string;
@@ -46,6 +48,7 @@ interface SearchParamsShape {
 }
 
 const DEFAULT_LIMIT = 50;
+const FETCH_BATCH = 12;
 
 const ALLOWED_SCOPES = new Set(config.customerScopes.map((c) => c.scope));
 // CareTeam (the ThreadConnect support desk) serves every client tenant, so its
@@ -148,6 +151,7 @@ export default async function TicketsListPage({
 
   let tickets: Ticket[] = [];
   let error: string | null = null;
+  const failedIds: string[] = [];
   try {
     if (!customerScope) {
       // No scope = no list. PP doesn't expose a verified all-tickets endpoint
@@ -170,11 +174,16 @@ export default async function TicketsListPage({
       } else {
         ids = await listTicketIdsByScope(customerScope, DEFAULT_LIMIT);
       }
-      const fetched = await Promise.all(
-        ids.map(async (id) => {
+      // 2026-10-16: fetching every ticket at once (up to 150 for CareTeam) made PP
+      // fail a random share of calls, and each failure silently dropped a row
+      // (same list loaded 8 / 44 / 50 / 50 tickets in a row). Fetch in batches of
+      // FETCH_BATCH with one retry, and report what still failed instead of hiding it.
+      const fetchOne = async (id: string): Promise<Ticket | null> => {
+        for (let attempt = 0; attempt < 2; attempt++) {
           try {
             return await getTicket(id, connieConfig);
           } catch (fetchErr) {
+            if (attempt === 0) { await new Promise((r) => setTimeout(r, 400)); continue; }
             console.warn(
               JSON.stringify({
                 bridge_tickets_page: true,
@@ -183,10 +192,16 @@ export default async function TicketsListPage({
                 error: fetchErr instanceof Error ? fetchErr.message : String(fetchErr),
               }),
             );
+            failedIds.push(String(id));
             return null;
           }
-        }),
-      );
+        }
+        return null;
+      };
+      const fetched: (Ticket | null)[] = [];
+      for (let i = 0; i < ids.length; i += FETCH_BATCH) {
+        fetched.push(...(await Promise.all(ids.slice(i, i + FETCH_BATCH).map(fetchOne))));
+      }
       tickets = fetched.filter((t): t is Ticket => t !== null);
       if (statusFilter) {
         tickets = tickets.filter((t) => t.status === statusFilter);
@@ -243,6 +258,11 @@ export default async function TicketsListPage({
           )}
         </div>
 
+        {failedIds.length > 0 && (
+          <div role="status" style={{ marginBottom: '12px', padding: '10px 14px', borderRadius: '8px', backgroundColor: '#fef3c7', color: '#92400e', fontSize: '14px' }}>
+            {failedIds.length} ticket{failedIds.length === 1 ? '' : 's'} couldn&apos;t be loaded right now (#{failedIds.join(', #')}). Refresh to try again.
+          </div>
+        )}
         {error && (
           <div style={{
             padding: '12px 16px',

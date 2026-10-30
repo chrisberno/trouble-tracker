@@ -151,7 +151,7 @@ export default function IntakeV2Page() {
     <div className="min-h-screen bg-gray-50 py-10 px-4">
       <div className="max-w-2xl mx-auto">
         <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
-          <h1 className="text-3xl font-bold text-gray-800">Connie Support</h1>
+          <h1 className="text-3xl font-bold text-gray-800">ThreadConnect Support</h1>
           <p className="text-gray-600 mt-1">Submit a support ticket</p>
           {scopeLabel && (
             <div className="mt-3">
@@ -196,7 +196,7 @@ export default function IntakeV2Page() {
                 }
                 className="inline-flex items-center text-gray-600 hover:text-gray-800 hover:bg-gray-100 font-medium px-6 py-3 rounded-lg transition-colors"
               >
-                Back to Connie
+                Back to ThreadConnect
               </a>
             </div>
           </div>

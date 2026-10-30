@@ -60,8 +60,8 @@ export function IframeBlocker({ result }: { result: Extract<IframeGateResult, { 
             lineHeight: 1.5,
           }}
         >
-          This page is only accessible from inside the Connie CRM container.
-          Please access it via your Connie support portal.
+          This page is only accessible from inside the ThreadConnect CRM container.
+          Please access it via your ThreadConnect support portal.
         </p>
         <details
           style={{

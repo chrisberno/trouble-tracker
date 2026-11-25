@@ -36,6 +36,7 @@ export function buildConnieTwilioConfig(): TwilioBridgeConfig {
     taskChannel: config.twilio.taskChannel,
     iframeBaseUrl: config.twilio.iframeBaseUrl,
     deploymentId: config.id,
+    taskTimeoutSeconds: (config.twilio as { taskTimeoutSeconds?: number }).taskTimeoutSeconds,
   };
 }
 

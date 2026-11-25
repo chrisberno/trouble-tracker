@@ -137,4 +137,48 @@ export async function sendAgentReplyEmail(args: {
   });
 }
 
+// Staff heads-up when a ticket is filed. Plain on purpose: who, which client,
+// what they wrote, where to answer it. No ticketId is passed to the sender, so
+// the Message-Id carries no ticket marker and a staff reply-by-email is never
+// threaded into the ticket as if the customer wrote it.
+export async function sendStaffNewTicketEmail(ticket: Ticket, to: string[]): Promise<void> {
+  const recipients = to.map((a) => a.trim()).filter(Boolean);
+  if (!recipients.length) return;
+  const scope = ticket.customerScope || 'Unknown client';
+  const who = ticket.customer.name || 'Unknown';
+  const contact = [ticket.customer.email, ticket.customer.phone].filter(Boolean).join(' / ') || 'none given';
+  const link = `https://trouble-ticket-app.vercel.app/bridge/tickets?ticketId=${encodeURIComponent(ticket.id)}`;
+  const subject = `New support ticket #${ticket.id} (${scope}): ${ticket.subject}`.slice(0, 200);
+  const lines = [
+    `A new support ticket was filed.`,
+    ``,
+    `Ticket: #${ticket.id}`,
+    `Client: ${scope}`,
+    `From: ${who} (${contact})`,
+    `Priority: ${ticket.priority}`,
+    `Subject: ${ticket.subject}`,
+    ``,
+    ticket.description || '(no description)',
+    ``,
+    `To answer it: sign in to the Care Team Flex and accept it from the Support queue.`,
+    `It waits there for up to 14 days.`,
+  ];
+  const esc = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const htmlBody = `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.5">${lines
+    .map((l) => (l ? esc(l) : '&nbsp;'))
+    .join('<br>')}</div>`;
+  for (const addr of recipients) {
+    await sendCustomerEmail({
+      to: addr,
+      subject,
+      textBody: lines.join('\n'),
+      htmlBody,
+      replyTo: ticket.customer.email || undefined,
+      tags: ['staff-new-ticket', `scope-${ticket.customerScope || 'unknown'}`],
+      customVars: { ticketId: ticket.id, eventKind: 'staff.ticket.created', ticketLink: link },
+    });
+  }
+}
+
 export { register } from './register';

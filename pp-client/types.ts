@@ -93,6 +93,14 @@ export interface DeploymentConfig {
 export interface ChannelsConfig {
   customerEmail?: CustomerEmailChannelConfig;
   flexCustomerReplyNotification?: FlexCustomerReplyNotificationConfig;
+  staffNewTicketEmail?: StaffNewTicketEmailConfig;
+}
+
+// Tells the support staff a ticket was filed, so a ticket never depends on
+// someone happening to be logged in to the queue. Absent = no staff email.
+export interface StaffNewTicketEmailConfig {
+  enabled: boolean;
+  to: string[];
 }
 
 export interface CustomerEmailChannelConfig {

@@ -26,6 +26,7 @@
     "conversationsServiceSid": "IS91e4bcb2939d4672a007ef27d323ad41",
     "taskAttributeType": "support_ticket",
     "taskChannel": "chat",
+    "taskTimeoutSeconds": 1209600,
     "iframeBaseUrl": "https://trouble-ticket-app.vercel.app/bridge/twilio-flex/ticket"
   },
   "customerScopes": [
@@ -51,6 +52,10 @@
     },
     "flexCustomerReplyNotification": {
       "enabled": true
+    },
+    "staffNewTicketEmail": {
+      "enabled": true,
+      "to": ["chris@connie.team", "andrea@connie.team"]
     }
   }
 }

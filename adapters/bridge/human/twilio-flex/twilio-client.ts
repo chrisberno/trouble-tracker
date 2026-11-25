@@ -508,6 +508,9 @@ export async function createInteraction(
       workflow_sid: input.workflowSid,
       task_channel_unique_name: input.taskChannelUniqueName,
       attributes: input.taskAttributes,
+      // Without this TaskRouter cancels an unaccepted ticket task after 24 h,
+      // leaving the ticket open with nothing in anyone's queue (2026-11-25).
+      ...(config.taskTimeoutSeconds ? { timeout: config.taskTimeoutSeconds } : {}),
     },
   };
 

@@ -15,6 +15,9 @@ export interface TwilioBridgeConfig {
   taskChannel: string;               // e.g. 'email' — capacity-counting channel
   iframeBaseUrl: string;             // e.g. 'https://trouble-ticket-app.vercel.app/bridge/twilio-flex/ticket'
   deploymentId: string;              // e.g. 'connie' — load-bearing for task-webhook discriminator gate
+  // How long a ticket task waits in the queue before TaskRouter cancels it.
+  // Unset = TaskRouter's default of 24 h. TaskRouter's ceiling is 14 days (1209600).
+  taskTimeoutSeconds?: number;
 }
 
 // Bridge-level metadata declared per Manifesto v2.2 Bridge Contract.

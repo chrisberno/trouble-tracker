@@ -12,7 +12,7 @@
 import { subscribe } from '@/pp-client';
 import type { Ticket } from '@/pp-client/types';
 import { getBridgeMappingByTicketId } from '@/adapters/bridge/human/twilio-flex/bridge-db';
-import { sendTicketCreatedEmail, sendAgentReplyEmail } from './index';
+import { sendTicketCreatedEmail, sendAgentReplyEmail, sendStaffNewTicketEmail } from './index';
 import { getTicket } from '@/pp-client';
 import type { DeploymentConfig } from '@/pp-client/types';
 
@@ -35,6 +35,26 @@ export function register(deployment: DeploymentConfig): void {
   // Sprint 4.0 — read per-deployment channel config. Absence preserves
   // pre-S4.0 always-on behavior. Disabled flag short-circuits all subscribers
   // for this deployment without removing the substrate code path.
+  // Staff heads-up on a new ticket. Independent of the customer-email toggle
+  // below: turning customer mail off must not silence the staff alert.
+  const staffCfg = deployment.channels?.staffNewTicketEmail;
+  if (staffCfg?.enabled && staffCfg.to?.length) {
+    subscribe(['ticket.created'], async (event) => {
+      if (event.kind !== 'ticket.created') return;
+      try {
+        const enriched = await enrichScopeFromBridgeDb(event.ticket);
+        await sendStaffNewTicketEmail(enriched, staffCfg.to);
+      } catch (err) {
+        console.warn(JSON.stringify({
+          customer_email: true,
+          warning: 'sendStaffNewTicketEmail threw; not retrying',
+          ticketId: event.ticket.id,
+          error: err instanceof Error ? err.message : String(err),
+        }));
+      }
+    });
+  }
+
   const cfg = deployment.channels?.customerEmail;
   const enabled = cfg ? cfg.enabled : true;
   const events = cfg ? cfg.events : LEGACY_DEFAULT_EVENTS;

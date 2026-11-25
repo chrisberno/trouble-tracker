@@ -63,10 +63,15 @@ const ALLOWED_SCOPES = new Set(config.customerScopes.map((c) => c.scope));
 // is the follow-up before outside nonprofits get logins (2026-10-16 CEO ruling).
 const AGGREGATE_SCOPE = 'CareTeam';
 
-const STATUS_FILTERS = ['all', 'open', 'in_progress', 'waiting', 'resolved', 'closed'] as const;
+// 'active' = open + in progress + waiting: everything still owed an answer. It is
+// the default (2026-11-25): the old default 'open' hid a ticket the moment an agent
+// moved it to In Progress, so the list looked like it was losing tickets.
+const STATUS_FILTERS = ['active', 'all', 'open', 'in_progress', 'waiting', 'resolved', 'closed'] as const;
+const ACTIVE_STATUSES: readonly string[] = ['open', 'in_progress', 'waiting'];
 type StatusFilter = (typeof STATUS_FILTERS)[number];
 
 const STATUS_FILTER_LABELS: Record<StatusFilter, string> = {
+  active: 'Active',
   all: 'All',
   open: 'Open',
   in_progress: 'In Progress',
@@ -156,7 +161,7 @@ export default async function TicketsListPage({
     : DEFAULT_LIMIT;
   let hitCap = false;
   const requestedStatus = (params.status ?? '').trim().toLowerCase();
-  const activeStatus: StatusFilter = isStatusFilter(requestedStatus) ? requestedStatus : 'open';
+  const activeStatus: StatusFilter = isStatusFilter(requestedStatus) ? requestedStatus : 'active';
   const statusFilter = activeStatus === 'all' ? undefined : activeStatus;
 
   let tickets: Ticket[] = [];
@@ -215,7 +220,9 @@ export default async function TicketsListPage({
         fetched.push(...(await Promise.all(ids.slice(i, i + FETCH_BATCH).map(fetchOne))));
       }
       tickets = fetched.filter((t): t is Ticket => t !== null);
-      if (statusFilter) {
+      if (statusFilter === 'active') {
+        tickets = tickets.filter((t) => ACTIVE_STATUSES.includes(t.status));
+      } else if (statusFilter) {
         tickets = tickets.filter((t) => t.status === statusFilter);
       }
       tickets.sort((a, b) => b.createdAt.localeCompare(a.createdAt));

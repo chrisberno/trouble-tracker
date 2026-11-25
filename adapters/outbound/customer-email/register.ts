@@ -35,14 +35,18 @@ export function register(deployment: DeploymentConfig): void {
   // Sprint 4.0 — read per-deployment channel config. Absence preserves
   // pre-S4.0 always-on behavior. Disabled flag short-circuits all subscribers
   // for this deployment without removing the substrate code path.
-  // Staff heads-up on a new ticket. Independent of the customer-email toggle
-  // below: turning customer mail off must not silence the staff alert.
-  const staffCfg = deployment.channels?.staffNewTicketEmail;
-  if (staffCfg?.enabled && staffCfg.to?.length) {
+  // Staff heads-up on a new ticket. Independent of the customer-email toggle:
+  // turning customer mail off must not silence the staff alert. Registered LAST
+  // so its longer wait for the client name never delays the submitter's email.
+  // The wait: PP fires ticket.created while intake is still saving the client
+  // name to bridge-db, so the first reads come back empty ("Unknown client").
+  const registerStaffEmail = (): void => {
+    const staffCfg = deployment.channels?.staffNewTicketEmail;
+    if (!staffCfg?.enabled || !staffCfg.to?.length) return;
     subscribe(['ticket.created'], async (event) => {
       if (event.kind !== 'ticket.created') return;
       try {
-        const enriched = await enrichScopeFromBridgeDb(event.ticket);
+        const enriched = await enrichScopeFromBridgeDb(event.ticket, 12, 500);
         await sendStaffNewTicketEmail(enriched, staffCfg.to);
       } catch (err) {
         console.warn(JSON.stringify({
@@ -53,7 +57,7 @@ export function register(deployment: DeploymentConfig): void {
         }));
       }
     });
-  }
+  };
 
   const cfg = deployment.channels?.customerEmail;
   const enabled = cfg ? cfg.enabled : true;
@@ -65,6 +69,7 @@ export function register(deployment: DeploymentConfig): void {
       customer_email: true,
       info: 'channel disabled by deployment config; no subscribers registered',
     }));
+    registerStaffEmail();
     return;
   }
 
@@ -112,6 +117,8 @@ export function register(deployment: DeploymentConfig): void {
     });
   }
 
+  registerStaffEmail();
+
   console.log(JSON.stringify({
     customer_email: true,
     info: 'registered subscribers',
@@ -136,11 +143,13 @@ export function register(deployment: DeploymentConfig): void {
 // creation that never invokes intake prewrite — that last case stays null
 // regardless and degrades to scope-unknown). Cosmetic — Mailgun analytics tag
 // accuracy only.
-async function enrichScopeFromBridgeDb(ticket: Ticket): Promise<Ticket> {
+async function enrichScopeFromBridgeDb(
+  ticket: Ticket,
+  MAX_ATTEMPTS = 4,
+  INTERVAL_MS = 200,
+): Promise<Ticket> {
   if (ticket.customerScope) return ticket;
 
-  const MAX_ATTEMPTS = 4;
-  const INTERVAL_MS = 200;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     try {
       const mapping = await getBridgeMappingByTicketId(ticket.id);

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { handleWebFormIntake } from '@/adapters/inbound/web-form/handler';
-import { connieConfig, connieTwilioConfig } from '@/deployments/connie';
+import { connieConfig, connieTwilioConfig, customerScopeFromEmail } from '@/deployments/connie';
 import config from '@/deployments/connie/config.json';
 import { dispatchTicketCreated } from '@/adapters/bridge/human/twilio-flex';
 
@@ -60,9 +60,25 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const bodyScope = typeof b.customerScope === 'string' && allowedScopes.has(b.customerScope)
     ? b.customerScope
     : null;
-  const customerScope = bodyScope ?? connieConfig.customerScopeRule({
+  const ruleScope = bodyScope ?? connieConfig.customerScopeRule({
     headers: { referer: request.headers.get('referer') ?? undefined },
   });
+  // 2026-11-26: a ticket must not save without a client. When neither the form
+  // nor the referer names one, fall back to the submitter's staff email domain.
+  // Seven real NSS tickets saved as "Unknown" this way and sat in no list.
+  const emailScope = allowedScopes.has(ruleScope) ? null : customerScopeFromEmail(customerEmail);
+  const customerScope = emailScope ?? ruleScope;
+  if (!allowedScopes.has(customerScope)) {
+    console.warn(
+      JSON.stringify({
+        intake_route: true,
+        warning: 'ticket filed with no client; it shows as "No client" in the CareTeam list',
+        emailDomain: (customerEmail.split('@').pop() ?? '').toLowerCase(),
+      }),
+    );
+  } else if (emailScope) {
+    console.log(JSON.stringify({ intake_route: true, note: 'client resolved from email domain', customerScope }));
+  }
 
   const result = await handleWebFormIntake(
     { title, description, customerName, customerEmail, customerPhone, customerScope },

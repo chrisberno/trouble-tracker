@@ -30,7 +30,7 @@
     "iframeBaseUrl": "https://trouble-ticket-app.vercel.app/bridge/twilio-flex/ticket"
   },
   "customerScopes": [
-    { "scope": "NSS",      "refererMatch": "nss.connie.team" },
+    { "scope": "NSS",      "refererMatch": "nss.connie.team", "emailDomains": ["nevadaseniorservices.org"] },
     { "scope": "HHOVV",    "refererMatch": "hhovv.connie.team" },
     { "scope": "Lifeline", "refererMatch": "lifeline.connie.team" }
   ],

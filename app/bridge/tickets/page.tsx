@@ -28,6 +28,7 @@ import { getTicket } from '@/pp-client';
 import type { Ticket } from '@/pp-client';
 import {
   listTicketIdsByScope,
+  listUnscopedTicketIds,
   getBridgeMappingByTicketId,
 } from '@/adapters/bridge/human/twilio-flex/bridge-db';
 import { connieConfig } from '@/deployments/connie';
@@ -62,6 +63,7 @@ const ALLOWED_SCOPES = new Set(config.customerScopes.map((c) => c.scope));
 // as every /bridge page (a deterrent, not security). Signed CareTeam-only token
 // is the follow-up before outside nonprofits get logins (2026-10-16 CEO ruling).
 const AGGREGATE_SCOPE = 'CareTeam';
+const NO_CLIENT_LABEL = 'No client';
 
 // 'active' = open + in progress + waiting: everything still owed an answer. It is
 // the default (2026-11-25): the old default 'open' hid a ticket the moment an agent
@@ -186,7 +188,11 @@ export default async function TicketsListPage({
             return scIds;
           }),
         );
-        ids = Array.from(new Set(perScope.flat()));
+        // 2026-11-26: tickets attached to no client are in no client's list, so
+        // CareTeam is the one place they can be seen. Shown as "No client".
+        const unscoped = await listUnscopedTicketIds(Array.from(ALLOWED_SCOPES), limit);
+        unscoped.forEach((id) => clientById.set(String(id), NO_CLIENT_LABEL));
+        ids = Array.from(new Set([...perScope.flat(), ...unscoped]));
       } else {
         ids = await listTicketIdsByScope(customerScope, limit);
         if (ids.length >= limit) hitCap = true;

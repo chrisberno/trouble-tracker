@@ -40,5 +40,20 @@ export function buildConnieTwilioConfig(): TwilioBridgeConfig {
   };
 }
 
+// Last-resort client lookup for a ticket that arrived with no client (2026-11-26).
+// The support page can lose track of which client a staff member belongs to (any
+// "Home" link inside it drops the client from the address), and the ticket then
+// saved as "Unknown" and appeared in no list. A staff email domain listed under a
+// client's `emailDomains` in config.json settles it. Returns null when no domain
+// matches; the caller keeps "Unknown", which the CareTeam list shows as "No client".
+export function customerScopeFromEmail(email: string): string | null {
+  const domain = (email.split('@').pop() ?? '').trim().toLowerCase();
+  if (!domain) return null;
+  for (const entry of config.customerScopes as { scope: string; emailDomains?: string[] }[]) {
+    if ((entry.emailDomains ?? []).some((d) => d.toLowerCase() === domain)) return entry.scope;
+  }
+  return null;
+}
+
 export const connieConfig = buildConnieConfig();
 export const connieTwilioConfig = buildConnieTwilioConfig();

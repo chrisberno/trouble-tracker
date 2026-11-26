@@ -126,6 +126,26 @@ export async function listTicketIdsByScope(
   return result.rows.map((r) => r.ticket_id as string);
 }
 
+// Tickets attached to no known client (NULL, blank, "Unknown", or a scope that is
+// not in config). They are in no client's list, so the CareTeam all-clients list
+// shows them as "No client" (2026-11-26): a ticket must never be invisible.
+export async function listUnscopedTicketIds(
+  knownScopes: string[],
+  limit = 100,
+): Promise<string[]> {
+  await initBridgeMappingTable();
+  const known = JSON.stringify(knownScopes);
+  const result = await sql`
+    SELECT ticket_id
+    FROM twilio_bridge_mappings
+    WHERE customer_scope IS NULL
+       OR customer_scope NOT IN (SELECT jsonb_array_elements_text(${known}::jsonb))
+    ORDER BY created_at DESC
+    LIMIT ${limit}
+  `;
+  return result.rows.map((r) => r.ticket_id as string);
+}
+
 // TTB-17 fix #3: pre-write the customer_scope binding from the intake handler
 // BEFORE PP fires its ticket.created webhook. This makes bridge-db the
 // authoritative source for ticketId→scope, decoupling the bridge from any
